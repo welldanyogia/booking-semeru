@@ -15,6 +15,9 @@ import json
 import logging
 from bs4 import BeautifulSoup
 from difflib import get_close_matches
+from telegram.constants import ParseMode
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import CallbackQueryHandler
 
 
 # Setup logging
@@ -273,30 +276,77 @@ def make_session_with_cookies(ci_session: str, extra_cookies: dict | None = None
         sess.cookies.set("ci_session", ci_session, domain="bromotenggersemeru.id", path="/")
     return sess
 
-def fetch_districts_by_province(id_province: str) -> list[tuple[str, str]]:
+def fetch_districts_by_province(id_province: str, ci_session: str = "", extra_cookies: dict | None = None) -> list[tuple[str, str]]:
     """
     Return list [(kode_kabkota, NAMA_KAB/KOTA), ...]
+    Endpoint 'combo' beberapa kali minta cookie + header AJAX dan nama field bisa beda-beda.
     """
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    }
-    try:
-        resp = requests.post(COMBO_URL, data={"id_province": str(id_province)}, headers=headers, timeout=30)
-        resp.raise_for_status()
-    except Exception as e:
-        log.warning("Gagal fetch kab/kota untuk prov %s: %s", id_province, e)
-        return []
+    sess = make_session_with_cookies(ci_session, extra_cookies)
 
-    soup = BeautifulSoup(resp.text, "lxml")
-    out: list[tuple[str, str]] = []
-    for opt in soup.select("option"):
-        val = (opt.get("value") or "").strip()
-        name = opt.get_text(strip=True)
-        if not val or val == "-":
-            continue
-        out.append((val, name))
-    return out
+    # Header ala AJAX request dari browser
+    referer = f"{BASE}{SITE_PATH_BROMO}?date_depart={(datetime.now().date()).isoformat()}"
+    sess.headers.update({
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": BASE,
+        "Referer": referer,
+        "Connection": "keep-alive",
+    })
+
+    # Coba beberapa bentuk payload yang umum dipakai backend CI
+    candidates = [
+        {"id_province": str(id_province)},
+        {"id": str(id_province)},
+        {"province": str(id_province)},
+        {"action": "kabupaten", "id_province": str(id_province)},
+        {"action": "kabupaten", "id": str(id_province)},
+    ]
+
+    # Helper parse (HTML <option> atau JSON {options:[{value,text}]})
+    def parse_options(text: str) -> list[tuple[str, str]]:
+        out: list[tuple[str, str]] = []
+        soup = BeautifulSoup(text, "lxml")
+        opts = soup.select("option")
+        if opts:
+            for opt in opts:
+                val = (opt.get("value") or "").strip()
+                name = opt.get_text(strip=True)
+                if not val or val == "-":  # skip placeholder
+                    continue
+                out.append((val, name))
+            return out
+
+        # kemungkinan JSON
+        try:
+            j = json.loads(text)
+            # contoh skema generik: {"options":[{"value":"3578","text":"KOTA SURABAYA"}, ...]}
+            if isinstance(j, dict) and "options" in j and isinstance(j["options"], list):
+                for it in j["options"]:
+                    val = (it.get("value") or "").strip()
+                    name = (it.get("text") or "").strip()
+                    if val and name and val != "-":
+                        out.append((val, name))
+        except Exception:
+            pass
+        return out
+
+    # Coba satu per satu payload sampai ada hasil
+    for payload in candidates:
+        try:
+            resp = sess.post(COMBO_URL, data=payload, timeout=30)
+            resp.raise_for_status()
+            pairs = parse_options(resp.text)
+            if pairs:
+                return pairs
+        except Exception as e:
+            log.debug("combo payload %s error: %s", payload, e)
+
+    # Debug bantu: potongan respon terakhir
+    try:
+        log.warning("combo(%s) kosong. Sample response: %s", id_province, resp.text[:200])
+    except Exception:
+        pass
+    return []
 
 def format_districts_message(prov_code: str, prov_name: str, pairs: list[tuple[str,str]]) -> str:
     header = f"📍 Daftar Kabupaten/Kota {prov_name.title()} ({prov_code})"
@@ -808,7 +858,7 @@ HELP_TEXT = (
     "• /start — cek bot\n"
     "• /help — lihat bantuan ini\n"
     "• /set_session <ci_session>\n"
-    "• /example — Contoh Format Booking\n"
+    "• /examples — Contoh Format Booking\n"
     "\n— Lookup Wilayah —\n"
     "• /prov <nama/kode>  → kode provinsi (contoh: /prov Jatim  |  /prov 35)\n"
     "• /kab <nama/kode>   → daftar kab/kota utk provinsi (contoh: /kab \"Jawa Timur\"  |  /kab 35)\n"
@@ -934,6 +984,21 @@ def parse_hhmmss(s: str) -> tuple[int,int,int]:
         raise ValueError("Jam di luar rentang 00:00[:00]..23:59[:59]")
     return hh, mm, ss
 
+# Simpan index -> job_name per user agar callback_data pendek
+def _ensure_job_index(context: ContextTypes.DEFAULT_TYPE, uid: str, jobs_store: dict) -> dict[int, str]:
+    idxmap_all = context.bot_data.setdefault("jobs_index", {})
+    idxmap = {}
+    # urutkan konsisten
+    for i, name in enumerate(sorted(jobs_store.keys()), start=1):
+        idxmap[i] = name
+    idxmap_all[uid] = idxmap
+    return idxmap
+
+def _get_job_name_by_idx(context: ContextTypes.DEFAULT_TYPE, uid: str, idx: int) -> str | None:
+    idxmap_all = context.bot_data.get("jobs_index", {})
+    idxmap = idxmap_all.get(uid) or {}
+    return idxmap.get(idx)
+
 # ---------- BROMO ----------
 async def book_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -1046,29 +1111,54 @@ async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ---------- SCHEDULER SHARED ----------
 async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
-    data = context.job.data
-    uid = str(data["user_id"])
+    from datetime import timedelta
+
+    data = context.job.data or {}
+    uid  = str(data["user_id"])
     site = data["site"]
-    iso = data["iso"]
+    iso  = data["iso"]
     prof = data["profile"]
     job_cookies = data.get("cookies") or {}
     chat_id = context.job.chat_id
 
-    # Konfigurasi polling & notifikasi
-    interval_seconds = data.get("interval_seconds", 20)     # 🕒 polling tiap 20 detik
-    notify_every_ticks = data.get("notify_every_ticks", max(1, int(300 / interval_seconds)))  # 📨 tiap 5 menit (300 dtk)
-    max_minutes = data.get("max_minutes", 180)              # maksimal durasi polling
-    max_ticks = int((max_minutes * 60) / interval_seconds)
+    # --- DETEKSI INTERVAL AKTUAL DARI JOB (PTB v21: timedelta) ---
+    actual_interval = 20
+    try:
+        if getattr(context.job, "interval", None):
+            iv = context.job.interval  # timedelta
+            actual_interval = int(iv.total_seconds())
+    except Exception:
+        pass
 
-    # counter tick
+    # --- PRIORITAS: pakai nilai yang dikirim lewat data, fallback ke interval aktual, lalu default ---
+    interval_seconds = int(data.get("interval_seconds") or actual_interval or 20)
+
+    # Kompatibilitas lama: kalau ada "notify_every" (dalam menit), konversi ke ticks
+    if "notify_every_ticks" in data:
+        notify_every_ticks = max(1, int(data["notify_every_ticks"]))
+    elif "notify_every" in data:
+        # menit -> tick
+        notify_every_ticks = max(1, int((int(data["notify_every"]) * 60) / interval_seconds))
+    else:
+        # default: kirim tiap 5 menit
+        notify_every_ticks = max(1, int(300 / interval_seconds))
+
+    # Batas durasi
+    if "max_ticks" in data:
+        max_ticks = int(data["max_ticks"])
+    else:
+        max_minutes = int(data.get("max_minutes", 180))
+        max_ticks = int((max_minutes * 60) / interval_seconds)
+
+    # Counter tick
     data["ticks"] = data.get("ticks", 0) + 1
 
     ci = get_ci(uid)  # fallback global
     cap = check_capacity(iso, site)
 
-    # Belum muncul / belum ada kuota
+    # Belum ada kuota
     if (not cap) or (cap["quota"] <= 0):
-        # Hanya kirim status tiap 5 menit (default)
+        # kirim status sesuai jadwal notifikasi
         if data["ticks"] % notify_every_ticks == 1:
             status = (f"{iso}: tanggal tidak ditemukan"
                       if not cap else f"{cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
@@ -1077,17 +1167,18 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
                 text=f"[Polling {site}] {status} (percobaan {data['ticks']}, interval {interval_seconds}s)"
             )
 
-        # Stop kalau sudah melewati durasi maksimum
+        # Stop bila mencapai batas tick
         if data["ticks"] >= max_ticks:
+            total_minutes = int((data["ticks"] * interval_seconds) / 60)
             await context.bot.send_message(
                 chat_id,
-                text=f"[Polling {site}] Dihentikan setelah ~{max_minutes} menit / {data['ticks']} percobaan. "
+                text=f"[Polling {site}] Dihentikan setelah ~{total_minutes} menit / {data['ticks']} percobaan. "
                      f"Gunakan /job_edit_time untuk menjadwalkan ulang."
             )
             context.job.schedule_removal()
         return
 
-    # Kuota muncul → eksekusi booking, lalu hentikan polling
+    # Kuota ada → eksekusi booking dan hentikan polling
     await context.bot.send_message(chat_id, text=f"[Polling {site}] Kuota tersedia: {cap['quota']} — eksekusi booking sekarang.")
     if site == "bromo":
         ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies)
@@ -1107,6 +1198,7 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
         text=("[Polling] ✅ " if ok else "[Polling] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra
     )
     context.job.schedule_removal()
+
 
 async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
@@ -1141,7 +1233,7 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         jq.run_repeating(
             poll_capacity_job,
             interval=60,
-            first=60,              # mulai 1 menit dari sekarang
+            first=60,
             name=poll_name,
             data={
                 "user_id": uid,
@@ -1149,12 +1241,18 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
                 "iso": iso,
                 "profile": prof,
                 "cookies": job_cookies,
-                # opsional kontrol notifikasi:
-                "notify_every": 5,   # kirim pesan tiap 5 menit; set ke 1 kalau mau tiap menit
-                "max_ticks": 180     # berhenti setelah 3 jam
+
+                # Gunakan kunci yang benar:
+                "interval_seconds": 60,  # sinkron dgn interval run_repeating
+                "notify_every_ticks": 5,  # tiap 5 tick = 5 menit karena interval 60s
+                "max_minutes": 180  # hard stop 3 jam
+                # (opsional) kalau tetap mau gaya lama:
+                # "notify_every": 5,          # menit (handler akan konversi ke ticks)
+                # "max_ticks": 180            # kalau kamu ingin batas tick absolut
             },
             chat_id=chat_id
         )
+
         await context.bot.send_message(chat_id, text=f"[Jadwal {site}] Polling per menit diaktifkan (max 3 jam).")
         return
 
@@ -1220,21 +1318,133 @@ def resolve_job_selector(uid: str, selector: str) -> str | None:
         return names[idx-1] if 1 <= idx <= len(names) else None
     return selector if selector in jobs_store else None
 
+def _fmt_len(s: str, n: int) -> str:
+    s = str(s)
+    return s[:n].ljust(n)
+
+def _detect_site(job_name: str) -> str:
+    return "SEMERU" if job_name.startswith("semeru-") else "BROMO"
+
+def _exec_dt_str(rec: dict) -> str:
+    # format singkat eksekusi: YYYY-MM-DD HH:MM
+    t = (rec.get("time") or "00:00")[:5]
+    return f"{rec.get('exec_iso','????-??-??')} {t}"
+
+def _participants(rec: dict) -> int:
+    prof = rec.get("profile", {})
+    # Bromo: 1 leader + male + female
+    if "name" in prof:
+        try:
+            m = int(prof.get("male", "0") or 0)
+            f = int(prof.get("female", "0") or 0)
+            return 1 + m + f
+        except Exception:
+            return 1
+    # Semeru: leader + jumlah anggota
+    mem = prof.get("_members", [])
+    return 1 + (len(mem) if isinstance(mem, list) else 0)
+
+def _cookies_badge(rec: dict) -> str:
+    ck = rec.get("cookies", {}) or {}
+    marks = []
+    marks.append("🔐" if ck.get("ci_session") else "⚠️")
+    if ck.get("_ga") or ck.get("_ga_TMVP85FKW9"):
+        marks.append("🍪")
+    return "".join(marks)
+
+def _status_badge(name: str, live: set[str]) -> str:
+    return "🟢" if name in live else "⚪"
+
+def _sort_key(item: tuple[str, dict]) -> tuple[str, str]:
+    name, rec = item
+    return (rec.get("exec_iso","9999-99-99"), rec.get("time","99:99:99"))
+
+def _render_jobs_table(jobs_store: dict, live: set[str]) -> list[str]:
+    if not jobs_store:
+        return ["Belum ada job terjadwal."]
+
+    header = (
+        _fmt_len("#", 3) + " " +
+        _fmt_len("ST", 2) + " " +
+        _fmt_len("SITE", 6) + " " +
+        _fmt_len("BOOKING", 10) + " " +
+        _fmt_len("EKSEKUSI", 16) + " " +
+        _fmt_len("LEADER", 16) + " " +
+        _fmt_len("PAX", 3) + " " +
+        "COOK " +
+        "JOB"
+    )
+    sep = "—" * len(header)
+
+    items = sorted(jobs_store.items(), key=_sort_key)
+
+    lines = [header, sep]
+    for idx, (name, rec) in enumerate(items, start=1):
+        leader = (rec.get("profile", {}).get("name")
+                  or rec.get("profile", {}).get("_leader", {}).get("name")
+                  or "-")
+        row = (
+            _fmt_len(idx, 3) + " " +
+            _fmt_len(_status_badge(name, live), 2) + " " +
+            _fmt_len(_detect_site(name), 6) + " " +
+            _fmt_len(rec.get("booking_iso","-"), 10) + " " +
+            _fmt_len(_exec_dt_str(rec), 16) + " " +
+            _fmt_len(leader, 16) + " " +
+            _fmt_len(_participants(rec), 3) + " " +
+            _fmt_len(_cookies_badge(rec), 4) + " " +
+            name
+        )
+        lines.append(row)
+
+    body = "\n".join(lines)
+    # pecah pesan kalau > 3900 char
+    chunks, cur, limit = [], "", 3900
+    for line in body.splitlines():
+        add = (("\n" if cur else "") + line)
+        if len(cur) + len(add) > limit:
+            chunks.append(cur)
+            cur = line
+        else:
+            cur += add
+    if cur:
+        chunks.append(cur)
+
+    return [f"<pre>{c}</pre>" for c in chunks]
+
 async def jobs_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     jobs_store = get_jobs_store(uid)
-    if not jobs_store:
-        await update.message.reply_text("Belum ada job terjadwal.")
-        return
     live = jobs_live_names(context)
-    names = sorted(jobs_store.keys())
-    lines = []
-    for i, name in enumerate(names, start=1):
-        rec = jobs_store[name]
-        leader = rec["profile"].get("name") or rec["profile"].get("_leader",{}).get("name","-")
-        status = "AKTIF" if name in live else "TIDAK AKTIF"
-        lines.append(f"{i}. {name} [{status}] Booking:{rec['booking_iso']} Eksekusi:{rec['exec_iso']} {rec['time']} Ketua:{leader}")
-    await update.message.reply_text("Daftar Job:\n" + "\n".join(lines))
+
+    parts = _render_jobs_table(jobs_store, live)
+    title = f"📋 Daftar Job ({len(jobs_store)})"
+    await update.message.reply_text(title)
+    for chunk in parts:
+        await update.message.reply_text(chunk, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+    if not jobs_store:
+        return
+
+    # Buat index mapping untuk callback (idx -> job_name)
+    idxmap = _ensure_job_index(context, uid, jobs_store)
+
+    # Kirim daftar ringkas + tombol (batasi 20 agar tidak spam)
+    MAX_ROWS = 20
+    rows = sorted(jobs_store.items(), key=_sort_key)[:MAX_ROWS]
+    for i, (name, rec) in enumerate(rows, start=1):
+        leader = (rec.get("profile", {}).get("name")
+                  or rec.get("profile", {}).get("_leader", {}).get("name")
+                  or "-")
+        text = f"{i}. {name}\n• Leader: {leader}\n• Eksekusi: {_exec_dt_str(rec)}"
+
+        kb = [
+            [
+                InlineKeyboardButton("ℹ️ Detail", callback_data=f"job:detail:{i}"),
+                InlineKeyboardButton("✏️ Edit",   callback_data=f"job:edit:{i}"),
+                InlineKeyboardButton("🗑️ Cancel", callback_data=f"job:cancel:{i}"),
+            ]
+        ]
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
 
 async def job_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -1570,7 +1780,6 @@ async def prov_lookup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Tidak ditemukan untuk '{q}'.")
 
 async def kabupaten_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # /kab Jatim  |  /kab 35  |  /kab Jawa Timur
     if not context.args:
         await update.message.reply_text("Pakai: /kab <provinsi>\nContoh: /kab Jatim  |  /kab 35")
         return
@@ -1584,7 +1793,11 @@ async def kabupaten_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Tidak ditemukan untuk '{q}'.")
         return
 
-    pairs = fetch_districts_by_province(code)
+    # gunakan ci_session global user, kalau ada
+    uid = str(update.effective_user.id)
+    ci = get_ci(uid)
+
+    pairs = fetch_districts_by_province(code, ci_session=ci)
     if not pairs:
         await update.message.reply_text(f"Tidak ada data kab/kota untuk {canon or q} ({code}).")
         return
@@ -1593,6 +1806,83 @@ async def kabupaten_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for part in split_long_message(msg):
         await update.message.reply_text(part)
 
+def _mask_cookie(s: str | None) -> str:
+    if not s: return "(kosong)"
+    return s[:6] + "..." + s[-4:]
+
+async def on_jobs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = str(q.from_user.id)
+
+    try:
+        _, action, idx_str = (q.data or "").split(":", 2)
+        idx = int(idx_str)
+    except Exception:
+        await q.edit_message_text("Callback tidak valid.")
+        return
+
+    name = _get_job_name_by_idx(context, uid, idx)
+    if not name:
+        await q.edit_message_text("Job tidak ditemukan (index kedaluwarsa). Jalankan /jobs lagi.")
+        return
+
+    jobs = get_jobs_store(uid)
+    rec = jobs.get(name)
+    if not rec:
+        await q.edit_message_text("Job tidak ditemukan.")
+        return
+
+    if action == "detail":
+        live = name in jobs_live_names(context)
+        ck = rec.get("cookies", {})
+        site = "SEMERU" if name.startswith("semeru-") else "BROMO"
+        leader = (rec.get("profile", {}).get("name")
+                  or rec.get("profile", {}).get("_leader", {}).get("name")
+                  or "-")
+        msg = (
+            f"🔎 <b>Detail Job</b>\n"
+            f"Nama   : <code>{name}</code>\n"
+            f"Status : {'AKTIF 🟢' if live else 'TIDAK AKTIF ⚪'}\n"
+            f"Site   : {site}\n"
+            f"Booking: {rec.get('booking_iso','-')}\n"
+            f"Eksekusi: {_exec_dt_str(rec)} (Asia/Jakarta)\n"
+            f"Leader : {leader}\n"
+            f"Cookies:\n"
+            f"  • _ga: {_mask_cookie(ck.get('_ga'))}\n"
+            f"  • _ga_TMVP85FKW9: {_mask_cookie(ck.get('_ga_TMVP85FKW9'))}\n"
+            f"  • ci_session: {_mask_cookie(ck.get('ci_session'))}\n"
+        )
+        await q.edit_message_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+    elif action == "cancel":
+        # batalkan semua job dengan nama ini (utama, reminder, polling)
+        try:
+            jq = require_jq(context)
+            for j in jq.get_jobs_by_name(name): j.schedule_removal()
+            for j in jq.get_jobs_by_name(f"rem-{name}"): j.schedule_removal()
+            for j in jq.get_jobs_by_name(f"poll-{name}"): j.schedule_removal()
+        except RuntimeError:
+            pass
+        jobs.pop(name, None)
+        save_storage(storage)
+        await q.edit_message_text(f"✅ Job <code>{name}</code> dibatalkan & dihapus.", parse_mode=ParseMode.HTML)
+
+    elif action == "edit":
+        # Sederhana: beri template command untuk diedit user
+        tmpl1 = f"/job_edit_time {idx} {rec.get('exec_iso','YYYY-MM-DD')} {rec.get('time','HH:MM')}"
+        tmpl2 = f"/job_update_cookies {idx} _ga=...;_ga_TMVP85FKW9=...;ci_session=..."
+        msg = (
+            "✏️ <b>Edit Job</b>\n"
+            "Gunakan perintah berikut (salin & sesuaikan):\n\n"
+            f"• Ubah waktu eksekusi:\n<code>{tmpl1}</code>\n\n"
+            f"• Update cookies:\n<code>{tmpl2}</code>\n"
+            "\nCatatan: index pada perintah merujuk ke urutan terakhir di /jobs."
+        )
+        await q.edit_message_text(msg, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+    else:
+        await q.edit_message_text("Aksi tidak dikenali.")
 
 # -------- Global Error Handler ----------
 async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1620,6 +1910,7 @@ def main():
     app.add_handler(CommandHandler("job_cancel", job_cancel))
     app.add_handler(CommandHandler("job_edit_time", job_edit_time))
     app.add_handler(CommandHandler("job_update_cookies", job_update_cookies))
+    app.add_handler(CallbackQueryHandler(on_jobs_callback, pattern=r"^job:"))
 
     # Lookup provinsi & kabupaten/kota
     app.add_handler(CommandHandler(["prov", "provinsi"], prov_lookup_cmd))
@@ -1665,6 +1956,8 @@ def main():
         fallbacks=[CommandHandler("cancel", lambda u,c: u.message.reply_text("Dibatalkan."))],
         name="semeru_sched", persistent=False
     ))
+
+
     # Contoh format
     app.add_handler(CommandHandler("examples", examples_cmd))
 
