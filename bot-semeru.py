@@ -1045,6 +1045,69 @@ async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TY
     return SCHED_CONFIRM
 
 # ---------- SCHEDULER SHARED ----------
+async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data
+    uid = str(data["user_id"])
+    site = data["site"]
+    iso = data["iso"]
+    prof = data["profile"]
+    job_cookies = data.get("cookies") or {}
+    chat_id = context.job.chat_id
+
+    # Konfigurasi polling & notifikasi
+    interval_seconds = data.get("interval_seconds", 20)     # 🕒 polling tiap 20 detik
+    notify_every_ticks = data.get("notify_every_ticks", max(1, int(300 / interval_seconds)))  # 📨 tiap 5 menit (300 dtk)
+    max_minutes = data.get("max_minutes", 180)              # maksimal durasi polling
+    max_ticks = int((max_minutes * 60) / interval_seconds)
+
+    # counter tick
+    data["ticks"] = data.get("ticks", 0) + 1
+
+    ci = get_ci(uid)  # fallback global
+    cap = check_capacity(iso, site)
+
+    # Belum muncul / belum ada kuota
+    if (not cap) or (cap["quota"] <= 0):
+        # Hanya kirim status tiap 5 menit (default)
+        if data["ticks"] % notify_every_ticks == 1:
+            status = (f"{iso}: tanggal tidak ditemukan"
+                      if not cap else f"{cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
+            await context.bot.send_message(
+                chat_id,
+                text=f"[Polling {site}] {status} (percobaan {data['ticks']}, interval {interval_seconds}s)"
+            )
+
+        # Stop kalau sudah melewati durasi maksimum
+        if data["ticks"] >= max_ticks:
+            await context.bot.send_message(
+                chat_id,
+                text=f"[Polling {site}] Dihentikan setelah ~{max_minutes} menit / {data['ticks']} percobaan. "
+                     f"Gunakan /job_edit_time untuk menjadwalkan ulang."
+            )
+            context.job.schedule_removal()
+        return
+
+    # Kuota muncul → eksekusi booking, lalu hentikan polling
+    await context.bot.send_message(chat_id, text=f"[Polling {site}] Kuota tersedia: {cap['quota']} — eksekusi booking sekarang.")
+    if site == "bromo":
+        ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies)
+    else:
+        leader = prof.get("_leader", {})
+        members = prof.get("_members", [])
+        ok, msg, elapsed_s, raw = do_booking_flow_semeru(ci, iso, leader, members, job_cookies=job_cookies)
+
+    extra = ""
+    if raw:
+        server_msg = raw.get("message", "-")
+        link = raw.get("booking_link") or raw.get("link_redirect") or "-"
+        extra = f"\n[Server]\nmessage: {server_msg}\nlink: {link}"
+
+    await context.bot.send_message(
+        chat_id,
+        text=("[Polling] ✅ " if ok else "[Polling] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra
+    )
+    context.job.schedule_removal()
+
 async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     uid = str(data["user_id"])
@@ -1059,19 +1122,44 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, text=f"[Jadwal {site}] ci_session kosong/expired. /set_session atau /job_update_cookies dulu.")
         return
 
-    # ✅ gunakan nama site, bukan id
+    jq = require_jq(context)
+    job_name = context.job.name or f"{site}-{uid}-{iso}"
+
+    # ✅ cek kapasitas saat eksekusi
     cap = check_capacity(iso, site)
-    if not cap:
-        await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {iso}: tanggal tidak ditemukan.")
+    if not cap or cap["quota"] <= 0:
+        # info kondisi saat ini
+        if not cap:
+            await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {iso}: tanggal tidak ditemukan.")
+        else:
+            await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
+
+        # aktifkan polling per menit
+        poll_name = f"poll-{job_name}"
+        for j in jq.get_jobs_by_name(poll_name):
+            j.schedule_removal()   # pastikan tidak dobel
+        jq.run_repeating(
+            poll_capacity_job,
+            interval=60,
+            first=60,              # mulai 1 menit dari sekarang
+            name=poll_name,
+            data={
+                "user_id": uid,
+                "site": site,
+                "iso": iso,
+                "profile": prof,
+                "cookies": job_cookies,
+                # opsional kontrol notifikasi:
+                "notify_every": 5,   # kirim pesan tiap 5 menit; set ke 1 kalau mau tiap menit
+                "max_ticks": 180     # berhenti setelah 3 jam
+            },
+            chat_id=chat_id
+        )
+        await context.bot.send_message(chat_id, text=f"[Jadwal {site}] Polling per menit diaktifkan (max 3 jam).")
         return
 
-    await context.bot.send_message(
-        chat_id,
-        text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}"
-    )
-    if cap["quota"] <= 0:
-        return
-
+    # kalau kuota tersedia langsung eksekusi seperti biasa
+    await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
     if site == "bromo":
         ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies)
     else:
@@ -1191,6 +1279,7 @@ async def job_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         jq = require_jq(context)
         for j in jq.get_jobs_by_name(job_name): j.schedule_removal()
         for j in jq.get_jobs_by_name(f"rem-{job_name}"): j.schedule_removal()
+        for j in jq.get_jobs_by_name(f"poll-{job_name}"): j.schedule_removal()
     except RuntimeError:
         pass
     get_jobs_store(uid).pop(job_name, None)
@@ -1205,6 +1294,7 @@ async def reschedule_job(context: ContextTypes.DEFAULT_TYPE, uid: str, old_name:
     jq = require_jq(context)
     for j in jq.get_jobs_by_name(old_name): j.schedule_removal()
     for j in jq.get_jobs_by_name(f"rem-{old_name}"): j.schedule_removal()
+    for j in jq.get_jobs_by_name(f"poll-{old_name}"): j.schedule_removal()
 
     leader_name = profile.get("name") or profile.get("_leader",{}).get("name","ketua")
     new_name = make_job_name(site, uid, leader_name, booking_iso, exec_iso, hhmm)
