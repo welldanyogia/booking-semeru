@@ -329,8 +329,17 @@ def add_or_update_members_bromo(sess: requests.Session, secret: str, male: int, 
     try: _ = sess.post(ACTION_URL, data=payload, timeout=30)
     except Exception as e: log.warning("anggota_update (Bromo) error: %s", e)
 
-def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict, job_cookies: dict | None = None) -> tuple[bool, str, float, dict | None]:
+def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict,
+                          job_cookies: dict | None = None) -> tuple[bool, str, float, dict | None]:
     t0 = time.perf_counter()
+
+    # ✅ JIT: cek kuota saat eksekusi
+    cap = check_capacity(iso_date, "bromo")
+    if not cap:
+        return False, f"Kuota: tanggal {iso_date} tidak ditemukan.", time.perf_counter()-t0, None
+    if cap["quota"] <= 0:
+        return False, f"Kuota {cap['tanggal_cell']}: {cap['quota']} (Tidak tersedia).", time.perf_counter()-t0, None
+
     sess = make_session_with_cookies(ci_session, job_cookies)
     referer = build_referer_url(SITE_PATH_BROMO, iso_date)
     r = sess.get(referer, timeout=30)
@@ -385,8 +394,10 @@ def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict, job_coo
     elapsed = time.perf_counter() - t0
     ct = (resp.headers.get("Content-Type") or "").lower()
     if "json" in ct:
-        try: data = resp.json()
-        except Exception: return False, f"Respon tidak bisa dibaca JSON: {resp.text[:400]}", elapsed, None
+        try:
+            data = resp.json()
+        except Exception:
+            return False, f"Respon tidak bisa dibaca JSON: {resp.text[:400]}", elapsed, None
         if data.get("status") is True:
             link = data.get("booking_link") or data.get("link_redirect") or "(tidak ada link)"
             return True, f"Booking BERHASIL.\nLink: {link}\nServer message: {data.get('message','-')}", elapsed, data
@@ -536,10 +547,16 @@ def do_booking_flow_semeru(
       (2) update_hash & validate_booking
       (3) do_booking (data ketua/leader)
       (4) loop member_update untuk tiap anggota (maks 9)
-    Return: (ok, message, elapsed_seconds, data_json|None)
     """
     t0 = time.perf_counter()
     log.warning("Tanggal berangkat (ISO): %s", booking_iso)
+
+    # ✅ JIT: cek kuota saat eksekusi
+    cap = check_capacity(booking_iso, "semeru")
+    if not cap:
+        return False, f"Kuota: tanggal {booking_iso} tidak ditemukan.", time.perf_counter() - t0, None
+    if cap["quota"] <= 0:
+        return False, f"Kuota {cap['tanggal_cell']}: {cap['quota']} (Tidak tersedia).", time.perf_counter() - t0, None
 
     # Siapkan session + cookies
     sess = make_session_with_cookies(ci_session, job_cookies)
@@ -548,10 +565,9 @@ def do_booking_flow_semeru(
     referer = build_referer_url(SITE_PATH_SEMERU, booking_iso)
     log.warning("Referer GET: %s", referer)
 
-    # --- Pasang custom headers (menyerupai browser mobile Edge/Chromium) ---
+    # custom headers (mobile Edge/Chromium)
     custom_headers = {
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        # Requests handle gzip/deflate otomatis; 'br'/'zstd' bisa diabaikan server jika tak didukung klien.
         "Accept-Encoding": "gzip, deflate, br, zstd",
         "Accept-Language": "id,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
         "Connection": "keep-alive",
@@ -561,52 +577,43 @@ def do_booking_flow_semeru(
         "Sec-Fetch-Site": "same-origin",
         "Sec-Fetch-User": "?1",
         "Upgrade-Insecure-Requests": "1",
-        "User-Agent": (
-            "Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36 Edg/139.0.0.0"
-        ),
+        "User-Agent": ("Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36 Edg/139.0.0.0"),
         "sec-ch-ua": '"Not;A=Brand";v="99", "Microsoft Edge";v="139", "Chromium";v="139"',
         "sec-ch-ua-mobile": "?1",
         "sec-ch-ua-platform": '"Android"',
-        "Origin": BASE,  # dipakai juga untuk POST berikutnya
+        "Origin": BASE,
     }
-    # Tempel ke session agar request berikutnya ikut
     sess.headers.update(custom_headers)
 
-    # --- (1) GET halaman Semeru ---
+    # (1) GET halaman
     try:
         r = sess.get(referer, timeout=30)
     except Exception as e:
         return False, f"Gagal GET page: {e}", time.perf_counter() - t0, None
-
     if r.status_code != 200:
         return False, f"Gagal GET page: HTTP {r.status_code}", time.perf_counter() - t0, None
 
-    # Ekstrak secret & form_hash dari <div class="cnt-page">...</div>
+    # ekstrak token
     try:
         secret, form_hash, booking_obj = get_tokens_from_cnt_page(r.text, debug_name="debug_semeru.html")
         if not secret:
             return False, "Token 'secret' kosong dari cnt-page.", time.perf_counter() - t0, None
-        # form_hash bisa kosong dari server; tetap pakai sesuai yang diberikan
         log.info("Token OK: secret_len=%d, form_hash_len=%d", len(secret or ""), len(form_hash or ""))
     except Exception as e:
         return False, f"Gagal ekstrak token: {e}", time.perf_counter() - t0, None
 
-    # Tambahkan header AJAX untuk request XHR
-    sess.headers.update({
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": referer,  # tegaskan referer
-        "Origin": BASE,
-    })
+    # header AJAX
+    sess.headers.update({"X-Requested-With": "XMLHttpRequest", "Referer": referer, "Origin": BASE})
 
-    # --- (2) update_hash & validate_booking ---
+    # (2) update_hash & validate_booking
     try:
         _ = sess.post(ACTION_URL, data={"action": "update_hash", "secret": secret, "form_hash": form_hash or ""}, timeout=30)
         _ = sess.post(ACTION_URL, data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""}, timeout=30)
     except Exception as e:
         return False, f"Gagal update/validate hash: {e}", time.perf_counter() - t0, None
 
-    # --- (3) siapkan payload do_booking (arrival = H+1) ---
+    # (3) do_booking (arrival = H+1)
     try:
         arr_iso = (datetime.fromisoformat(booking_iso) + timedelta(days=1)).date().isoformat()
     except Exception:
@@ -632,12 +639,12 @@ def do_booking_flow_semeru(
         "id_district": leader.get("id_district", ""),
         "hp": leader.get("hp", ""),
         "table-member_length": "10",
-        "bank": leader.get("bank", "qris"),  # qris | VA-Mandiri | VA-BNI (sesuai server)
+        "bank": leader.get("bank", "qris"),
         "termsCheckbox": "on",
         "form_hash": form_hash or "",
     }
 
-    # --- (4) Tambah anggota (maks. 9) ---
+    # (4) tambah anggota (maks 9)
     added = 0
     for idx, m in enumerate(members, start=1):
         if idx > 9:
@@ -645,7 +652,6 @@ def do_booking_flow_semeru(
             break
         if not (m.get("nama") or "").strip():
             continue
-
         m_payload = {
             "action": "member_update",
             "id": "",
@@ -674,7 +680,7 @@ def do_booking_flow_semeru(
         except Exception as e:
             log.warning("member_update gagal (anggota %s): %s", idx, e)
 
-    # --- do_booking ---
+    # do_booking
     try:
         resp = sess.post(ACTION_URL, data=payload, timeout=60)
     except Exception as e:
@@ -694,12 +700,10 @@ def do_booking_flow_semeru(
 
     elapsed = time.perf_counter() - t0
     link = data.get("booking_link") or data.get("link_redirect") or "-"
-    msg = (
-        "Booking Semeru BERHASIL.\n"
-        f"Anggota ditambahkan: {added}\n"
-        f"Link: {link}\n"
-        f"Server: {data.get('message', '-')}"
-    )
+    msg = ("Booking Semeru BERHASIL.\n"
+           f"Anggota ditambahkan: {added}\n"
+           f"Link: {link}\n"
+           f"Server: {data.get('message', '-')}")
     return True, msg, elapsed, data
 
 # =================== COMMON FORM PARSER (Bromo) ===================
@@ -958,14 +962,6 @@ async def book_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["reminder_minutes"] = reminder_minutes
 
     iso = context.user_data["booking_iso"]
-    cap = check_capacity(iso, "bromo")
-    if not cap:
-        await update.message.reply_text(f"Tanggal {iso} tidak ditemukan di kalender.")
-        return ConversationHandler.END
-    if cap["quota"] <= 0:
-        await update.message.reply_text(f"{cap['tanggal_cell']}\nKuota: {cap['quota']} → Tidak tersedia.")
-        return ConversationHandler.END
-
     total = 1 + int(profile["male"]) + int(profile["female"])
     cookie_hint = ", ".join([f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga","_ga_TMVP85FKW9","ci_session"]])
     remind_txt = f"{reminder_minutes} menit" if reminder_minutes is not None else "tidak"
@@ -975,6 +971,7 @@ async def book_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Gate: {profile['id_gate']} | Kendaraan: {profile['id_vehicle']} x {profile['vehicle_count']}\n"
         f"Bayar: {profile['bank']} | L:{profile['male']} P:{profile['female']} | Total:{total}\n"
         f"Cookies: {cookie_hint} | Reminder: {remind_txt}\n\n"
+        "Catatan: Kuota akan dicek saat eksekusi.\n"
         "Ketik 'YA' untuk konfirmasi booking sekarang."
     )
     await update.message.reply_text(summary)
@@ -1031,22 +1028,17 @@ async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["cookies"] = cookies
     context.user_data["reminder_minutes"] = reminder_minutes
 
-    iso = context.user_data["booking_iso"]
-    cap = check_capacity(iso, "bromo")
-    if not cap:
-        await update.message.reply_text(f"Tanggal {iso} tidak ditemukan.")
-        return ConversationHandler.END
-
-    total = 1 + int(profile["male"]) + int(profile["female"])
     cookie_hint = ", ".join([f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga","_ga_TMVP85FKW9","ci_session"]])
     remind_txt = f"{reminder_minutes} menit" if reminder_minutes is not None else "tidak"
+    total = 1 + int(profile["male"]) + int(profile["female"])
     summary = (
         f"[Jadwal BROMO]\n"
         f"- Booking: {context.user_data['booking_iso']}\n"
         f"- Eksekusi: {context.user_data['exec_iso']} {context.user_data['time']} Asia/Jakarta\n"
-        f"Kuota sekarang: {cap['quota']} → {cap['status']}\n"
         f"Leader: {profile['name']} | KTP:{profile['identity_no']} | HP:{profile['hp']}\n"
+        f"Total peserta (estimasi): {total}\n"
         f"Cookies: {cookie_hint} | Reminder: {remind_txt}\n\n"
+        "Catatan: Kuota akan dicek pada waktu eksekusi.\n"
         "Ketik 'YA' untuk membuat jadwal."
     )
     await update.message.reply_text(summary)
@@ -1072,7 +1064,11 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     if not cap:
         await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {iso}: tanggal tidak ditemukan.")
         return
-    await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
+
+    await context.bot.send_message(
+        chat_id,
+        text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}"
+    )
     if cap["quota"] <= 0:
         return
 
@@ -1330,14 +1326,6 @@ async def book_semeru_collect_form(update: Update, context: ContextTypes.DEFAULT
     context.user_data["reminder_minutes"] = reminder_minutes
 
     iso = context.user_data["booking_iso"]
-    cap = check_capacity(iso, "semeru")
-    if not cap:
-        await update.message.reply_text(f"Semeru : Tanggal {iso} tidak ditemukan di kalender.")
-        return ConversationHandler.END
-    if cap["quota"] <= 0:
-        await update.message.reply_text(f"{cap['tanggal_cell']}\nKuota: {cap['quota']} → Tidak tersedia.")
-        return ConversationHandler.END
-
     cookie_hint = ", ".join([f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga","_ga_TMVP85FKW9","ci_session"]])
     remind_txt = f"{reminder_minutes} menit" if reminder_minutes is not None else "tidak"
     member_txt = "(tidak ada)" if not members else (", ".join([m.get('nama','?') for m in members]))
@@ -1347,6 +1335,7 @@ async def book_semeru_collect_form(update: Update, context: ContextTypes.DEFAULT
         f"Pendamping:{leader['pendamping']} | Org:'{leader['organisasi']}' | Setuju:{leader['leader_setuju']} | Bayar:{leader['bank']}\n"
         f"Anggota ({len(members)}): {member_txt}\n"
         f"Cookies: {cookie_hint} | Reminder: {remind_txt}\n\n"
+        "Catatan: Kuota akan dicek saat eksekusi.\n"
         "Ketik 'YA' untuk konfirmasi booking sekarang."
     )
     await update.message.reply_text(summary)
@@ -1404,12 +1393,6 @@ async def schedule_semeru_collect_form(update: Update, context: ContextTypes.DEF
     context.user_data["cookies"] = cookies
     context.user_data["reminder_minutes"] = reminder_minutes
 
-    iso = context.user_data["booking_iso"]
-    cap = check_capacity(iso, "semeru")
-    if not cap:
-        await update.message.reply_text(f"Tanggal {iso} tidak ditemukan.")
-        return ConversationHandler.END
-
     cookie_hint = ", ".join([f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga","_ga_TMVP85FKW9","ci_session"]])
     remind_txt = f"{reminder_minutes} menit" if reminder_minutes is not None else "tidak"
     member_txt = "(tidak ada)" if not members else (", ".join([m.get('nama','?') for m in members]))
@@ -1417,10 +1400,10 @@ async def schedule_semeru_collect_form(update: Update, context: ContextTypes.DEF
         f"[Jadwal SEMERU]\n"
         f"- Booking: {context.user_data['booking_iso']}\n"
         f"- Eksekusi: {context.user_data['exec_iso']} {context.user_data['time']} Asia/Jakarta\n"
-        f"Kuota sekarang: {cap['quota']} → {cap['status']}\n"
         f"Ketua: {leader['name']} | KTP:{leader['identity_no']} | HP:{leader['hp']}\n"
         f"Anggota ({len(members)}): {member_txt}\n"
         f"Cookies: {cookie_hint} | Reminder: {remind_txt}\n\n"
+        "Catatan: Kuota akan dicek pada waktu eksekusi.\n"
         "Ketik 'YA' untuk membuat jadwal."
     )
     await update.message.reply_text(summary)
