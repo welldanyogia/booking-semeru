@@ -1173,7 +1173,7 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
 
     # --- DETEKSI INTERVAL AKTUAL DARI JOB (PTB v21: timedelta) ---
-    actual_interval = 20
+    actual_interval = 60
     try:
         if getattr(context.job, "interval", None):
             iv = context.job.interval  # timedelta
@@ -1182,7 +1182,7 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
         pass
 
     # --- PRIORITAS: pakai nilai yang dikirim lewat data, fallback ke interval aktual, lalu default ---
-    interval_seconds = int(data.get("interval_seconds") or actual_interval or 20)
+    interval_seconds = int(data.get("interval_seconds") or actual_interval or 60)
 
     # Kompatibilitas lama: kalau ada "notify_every" (dalam menit), konversi ke ticks
     if "notify_every_ticks" in data:
