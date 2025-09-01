@@ -20,7 +20,8 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-
+import time
+from datetime import datetime, timedelta
 
 # Setup logging
 logging.basicConfig(
@@ -632,8 +633,238 @@ def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, li
 
     return leader, members, cookies, reminder_minutes, errors
 
-import time
-from datetime import datetime, timedelta
+
+# ======== SEMERU: helpers & 2-phase booking ========
+
+log = logging.getLogger("semeru")
+
+def _apply_ajax_headers(sess: requests.Session, referer_url: str):
+    """Set header AJAX yang dibutuhkan endpoint /website/booking/action."""
+    sess.headers.update({
+        "X-Requested-With": "XMLHttpRequest",
+        "Origin": BASE,
+        "Referer": referer_url,
+        "Accept": "*/*",
+        "Connection": "keep-alive",
+    })
+
+def _post_json(sess: requests.Session, url: str, data: dict, timeout: int = 30) -> tuple[bool, dict | None, str]:
+    """
+    Return: (is_json, json_obj|None, raw_text)
+    - is_json=True jika Content-Type JSON & parsing sukses.
+    - raw_text selalu dikembalikan untuk debug/log.
+    """
+    r = sess.post(url, data=data, timeout=timeout)
+    ct = (r.headers.get("Content-Type") or "").lower()
+    txt = r.text or ""
+    if "json" in ct:
+        try:
+            return True, r.json(), txt
+        except Exception:
+            return False, None, txt
+    return False, None, txt
+
+def _member_update_once(sess: requests.Session, secret: str, form_hash: str, m: dict) -> tuple[bool, str]:
+    """Kirim 1 anggota. Sukses = server mengembalikan JSON dengan status=True."""
+    payload = {
+        "action": "member_update",
+        "id": "",
+        "secret": secret,
+        "form_hash": form_hash or "",
+        "nama":            m.get("nama", ""),
+        "birthdate":       m.get("birthdate", ""),
+        "anggota_setuju":  m.get("anggota_setuju", "1"),
+        "id_gender":       m.get("id_gender", "1"),
+        "alamat":          m.get("alamat", ""),
+        "id_identity":     m.get("id_identity", "1"),
+        "identity_no":     m.get("identity_no", ""),
+        "hp_member":       m.get("hp_member", ""),
+        "hp_keluarga":     m.get("hp_keluarga", ""),
+        "id_job":          m.get("id_job", "6"),
+        "id_country":      m.get("id_country", "99"),
+    }
+    is_json, j, raw = _post_json(sess, ACTION_URL, payload, timeout=30)
+    if is_json and isinstance(j, dict):
+        ok = bool(j.get("status", True))
+        msg = (j.get("message") or "OK") if ok else (j.get("message") or "Gagal (status=false)")
+        return ok, str(msg)
+    return False, (raw[:160] + "…")
+
+def _add_members_batch(sess: requests.Session, secret: str, form_hash: str, members: list[dict]) -> tuple[int, list[str]]:
+    """Tambah hingga 9 anggota. Return (jumlah_sukses, catatan_per_anggota)."""
+    added = 0
+    notes: list[str] = []
+    for idx, m in enumerate(members, start=1):
+        if idx > 9:
+            notes.append("Lewati anggota > 9.")
+            break
+        if not (m.get("nama") or "").strip():
+            notes.append(f"[{idx}] nama kosong → skip")
+            continue
+        ok, msg = _member_update_once(sess, secret, form_hash, m)
+        if ok:
+            added += 1
+            notes.append(f"[{idx}] OK")
+        else:
+            notes.append(f"[{idx}] gagal: {msg}")
+            if "maksimal 9" in msg.lower():
+                break
+    return added, notes
+
+def _prime_tokens_semeru(sess: requests.Session, booking_iso: str) -> tuple[str, str, dict]:
+    """
+    Ambil ulang secret & form_hash dari halaman Semeru.
+    Me-referer ke URL booking yang sama (date_depart=booking_iso).
+    """
+    referer = build_referer_url(SITE_PATH_SEMERU, booking_iso)
+    r = sess.get(referer, timeout=30)
+    if r.status_code != 200:
+        raise RuntimeError(f"GET prime token gagal: HTTP {r.status_code}")
+    secret, form_hash, booking_obj = get_tokens_from_cnt_page(r.text, debug_name="debug_semeru_reprime.html")
+    if not secret:
+        raise RuntimeError("Token 'secret' kosong saat re-prime.")
+    return secret, (form_hash or ""), booking_obj
+from http.cookiejar import Cookie
+
+def has_cookie(jar: requests.cookies.RequestsCookieJar, name: str, domain: str | None = None, path: str | None = None) -> bool:
+    for c in jar:
+        if c.name == name and (domain is None or c.domain == domain) and (path is None or c.path == path):
+            return True
+    return False
+
+def set_unique_cookie(jar: requests.cookies.RequestsCookieJar, name: str, value: str, domain: str, path: str = "/"):
+    # hapus semua cookie existing dengan nama tsb agar tak konflik
+    to_clear = []
+    for c in list(jar):
+        if c.name == name:
+            to_clear.append((c.domain, c.path, c.name))
+    for d, p, n in to_clear:
+        try:
+            jar.clear(d, p, n)
+        except Exception:
+            pass
+    jar.set(name, value, domain=domain, path=path)
+
+import json, re
+from bs4 import BeautifulSoup
+
+def extract_tokens_from_html(html: str, debug_name: str = "debug_semeru.html"):
+    """
+    Kembalikan (secret, form_hash, booking_obj).
+    Cari di beberapa pola:
+    - <div class="cnt-page">{"booking":{...}}</div>
+    - <script id="cnt-page" type="application/json">...</script>
+    - JSON inline di <script> yang mengandung "booking" & "secret"
+    """
+    soup = BeautifulSoup(html, "lxml")
+
+    # 1) persis .cnt-page
+    holder = soup.select_one(".cnt-page")
+    if holder:
+        txt = holder.get_text("", strip=True)
+        try:
+            data = json.loads(txt)
+            booking = data.get("booking", {}) if isinstance(data, dict) else {}
+            secret = booking.get("secret")
+            form_hash = booking.get("form_hash", "")
+            if secret:
+                return secret, form_hash, booking
+        except Exception:
+            pass  # lanjut ke cara lain
+
+    # 2) script JSON khusus
+    script_json = soup.select_one('script#cnt-page[type="application/json"]')
+    if script_json:
+        txt = script_json.get_text("", strip=True)
+        try:
+            data = json.loads(txt)
+            booking = data.get("booking", {}) if isinstance(data, dict) else {}
+            secret = booking.get("secret")
+            form_hash = booking.get("form_hash", "")
+            if secret:
+                return secret, form_hash, booking
+        except Exception:
+            pass
+
+    # 3) fallback: scan semua <script> untuk JSON yg mengandung "booking" & "secret"
+    for sc in soup.find_all("script"):
+        code = (sc.string or sc.get_text() or "").strip()
+        if not code:
+            continue
+        if "booking" in code and "secret" in code:
+            # ambil blok {...} terdekat dengan "booking"
+            # cari object besar yang punya kunci "booking"
+            for m in re.finditer(r"\{.*?\}", code, flags=re.DOTALL):
+                chunk = m.group(0)
+                if '"booking"' in chunk and '"secret"' in chunk:
+                    # kadang ada trailing koma/JS → coba bersihkan karakter tak valid ringan
+                    cleaned = re.sub(r",\s*}", "}", chunk)
+                    try:
+                        data = json.loads(cleaned)
+                        # fleksibel: kadang langsung {"booking":{...}}, kadang {"some":{"booking":{...}}}
+                        def deep_get_booking(obj):
+                            if isinstance(obj, dict):
+                                if "booking" in obj and isinstance(obj["booking"], dict):
+                                    return obj["booking"]
+                                for v in obj.values():
+                                    res = deep_get_booking(v)
+                                    if res is not None:
+                                        return res
+                            return None
+                        booking = deep_get_booking(data) or {}
+                        secret = booking.get("secret")
+                        form_hash = booking.get("form_hash", "")
+                        if secret:
+                            return secret, form_hash, booking
+                    except Exception:
+                        continue
+
+    # 4) simpan debug lalu gagal
+    try:
+        with open(debug_name, "w", encoding="utf-8") as f:
+            f.write(html)
+    except Exception:
+        pass
+    raise RuntimeError(f"Elemen/JSON booking tidak ditemukan. HTML disimpan ke {debug_name}")
+def _prepare_sem_sess(ci_session: str, job_cookies: dict | None) -> requests.Session:
+    sess = requests.Session()
+    ua = ('Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) '
+          'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36 Edg/139.0.0.0')
+    sess.headers.update({
+        "User-Agent": ua,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "id,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+        "Connection": "keep-alive",
+    })
+
+    COOKIE_DOMAIN = ".bromotenggersemeru.id"
+
+    # gunakan helper aman dari patch sebelumnya:
+    # set_unique_cookie(...) & has_cookie(...)
+    if job_cookies:
+        for ck, val in job_cookies.items():
+            if val:
+                set_unique_cookie(sess.cookies, ck, val, domain=COOKIE_DOMAIN)
+
+    if ci_session and not has_cookie(sess.cookies, "ci_session"):
+        set_unique_cookie(sess.cookies, "ci_session", ci_session, domain=COOKIE_DOMAIN)
+
+    return sess
+
+def _preflight_sem(sess: requests.Session):
+    # 1) homepage → kadang set beberapa cookie/cache
+    try:
+        r0 = sess.get(f"{BASE}/", timeout=20)
+        r0.raise_for_status()
+    except Exception as e:
+        log.debug("Preflight step 1 gagal (home): %s", e)
+
+    # 2) peraturan semeru → sering jadi jalur normal sebelum booking
+    try:
+        r1 = sess.get(f"{BASE}/peraturan/semeru", timeout=20)
+        r1.raise_for_status()
+    except Exception as e:
+        log.debug("Preflight step 2 gagal (peraturan): %s", e)
 
 def do_booking_flow_semeru(
     ci_session: str,
@@ -642,170 +873,241 @@ def do_booking_flow_semeru(
     members: list,
     job_cookies: dict | None = None
 ) -> tuple[bool, str, float, dict | None]:
-    """
-    Flow Semeru:
-      (1) GET halaman Semeru (ambil secret, form_hash)
-      (2) update_hash & validate_booking
-      (3) do_booking (data ketua/leader)
-      (4) loop member_update untuk tiap anggota (maks 9)
-    """
     t0 = time.perf_counter()
-    log.warning("Tanggal berangkat (ISO): %s", booking_iso)
+    logger = globals().get("log") or logging.getLogger("booking-semeru")
+    logger.warning("Tanggal berangkat (ISO): %s", booking_iso)
 
-    # ✅ JIT: cek kuota saat eksekusi
+    safe_members = [m for m in (members or []) if (m.get("nama") or "").strip()]
+    if len(safe_members) == 0:
+        return False, "Form SEMERU wajib minimal 1 anggota (ketua + 1).", time.perf_counter()-t0, None
+
+    # ——— Cek kuota
     cap = check_capacity(booking_iso, "semeru")
     if not cap:
-        return False, f"Kuota: tanggal {booking_iso} tidak ditemukan.", time.perf_counter() - t0, None
+        return False, f"Kuota: tanggal {booking_iso} tidak ditemukan.", time.perf_counter()-t0, None
     if cap["quota"] <= 0:
-        return False, f"Kuota {cap['tanggal_cell']}: {cap['quota']} (Tidak tersedia).", time.perf_counter() - t0, None
+        return False, f"Kuota {cap['tanggal_cell']}: {cap['quota']} (Tidak tersedia).", time.perf_counter()-t0, None
 
-    # Siapkan session + cookies
-    sess = make_session_with_cookies(ci_session, job_cookies)
+    # ——— Session & cookies (fresh jar)
+    def _new_session():
+        s = requests.Session()
+        ua = ('Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) '
+              'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36 Edg/139.0.0.0')
+        s.headers.update({
+            "User-Agent": ua,
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "id,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+            "Connection": "keep-alive",
+        })
+        dom = ".bromotenggersemeru.id"
+        def _set(name, val):
+            if val:
+                s.cookies.set(name, val, domain=dom, path="/")
+        if job_cookies:
+            _set("_ga", job_cookies.get("_ga"))
+            _set("_ga_TMVP85FKW9", job_cookies.get("_ga_TMVP85FKW9"))
+            _set("ci_session", job_cookies.get("ci_session"))
+        if ci_session and not (job_cookies or {}).get("ci_session"):
+            _set("ci_session", ci_session)
+        return s
 
-    # Siapkan URL referer
-    referer = build_referer_url(SITE_PATH_SEMERU, booking_iso)
-    log.warning("Referer GET: %s", referer)
+    sess = _new_session()
 
-    # custom headers (mobile Edge/Chromium)
-    custom_headers = {
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
-        "Accept-Encoding": "gzip, deflate, br, zstd",
-        "Accept-Language": "id,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
-        "Connection": "keep-alive",
-        "Referer": f"https://bromotenggersemeru.id/peraturan/semeru?date_depart={booking_iso}",
-        "Sec-Fetch-Dest": "document",
-        "Sec-Fetch-Mode": "navigate",
-        "Sec-Fetch-Site": "same-origin",
-        "Sec-Fetch-User": "?1",
-        "Upgrade-Insecure-Requests": "1",
-        "User-Agent": ("Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) "
-                       "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36 Edg/139.0.0.0"),
-        "sec-ch-ua": '"Not;A=Brand";v="99", "Microsoft Edge";v="139", "Chromium";v="139"',
-        "sec-ch-ua-mobile": "?1",
-        "sec-ch-ua-platform": '"Android"',
-        "Origin": BASE,
-    }
-    sess.headers.update(custom_headers)
+    def _prime_secret(sess_obj: requests.Session) -> tuple[str, str]:
+        # preflight ringan
+        for url in (f"{BASE}/", f"{BASE}/peraturan/semeru"):
+            try: sess_obj.get(url, timeout=15)
+            except Exception: pass
+        # cache-busting
+        ts = int(time.time()*1000)
+        referer = f"{BASE}{SITE_PATH_SEMERU}?date_depart={booking_iso}&t={ts}"
+        r = sess_obj.get(
+            referer, timeout=30,
+            headers={
+                "Referer": f"{BASE}/peraturan/semeru?date_depart={booking_iso}",
+                "Upgrade-Insecure-Requests": "1",
+                "Cache-Control": "no-cache",
+                "Pragma": "no-cache",
+            },
+        )
+        if r.status_code != 200:
+            raise RuntimeError(f"Gagal GET page: HTTP {r.status_code}")
+        secret, form_hash, _ = extract_tokens_from_html(r.text, debug_name="debug_semeru.html")
+        # siapkan AJAX headers utk POST
+        sess_obj.headers.update({
+            "X-Requested-With": "XMLHttpRequest",
+            "Origin": BASE,
+            "Referer": referer,
+        })
+        # update_hash + validate
+        sess_obj.post(ACTION_URL, data={"action":"update_hash","secret":secret,"form_hash":form_hash or ""}, timeout=30)
+        sess_obj.post(ACTION_URL, data={"action":"validate_booking","secret":secret,"form_hash":form_hash or ""}, timeout=30)
+        return secret, (form_hash or "")
 
-    # (1) GET halaman
-    try:
-        r = sess.get(referer, timeout=30)
-    except Exception as e:
-        return False, f"Gagal GET page: {e}", time.perf_counter() - t0, None
-    if r.status_code != 200:
-        return False, f"Gagal GET page: HTTP {r.status_code}", time.perf_counter() - t0, None
-
-    # ekstrak token
-    try:
-        secret, form_hash, booking_obj = get_tokens_from_cnt_page(r.text, debug_name="debug_semeru.html")
-        if not secret:
-            return False, "Token 'secret' kosong dari cnt-page.", time.perf_counter() - t0, None
-        log.info("Token OK: secret_len=%d, form_hash_len=%d", len(secret or ""), len(form_hash or ""))
-    except Exception as e:
-        return False, f"Gagal ekstrak token: {e}", time.perf_counter() - t0, None
-
-    # header AJAX
-    sess.headers.update({"X-Requested-With": "XMLHttpRequest", "Referer": referer, "Origin": BASE})
-
-    # (2) update_hash & validate_booking
-    try:
-        _ = sess.post(ACTION_URL, data={"action": "update_hash", "secret": secret, "form_hash": form_hash or ""}, timeout=30)
-        _ = sess.post(ACTION_URL, data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""}, timeout=30)
-    except Exception as e:
-        return False, f"Gagal update/validate hash: {e}", time.perf_counter() - t0, None
-
-    # (3) do_booking (arrival = H+1)
-    try:
-        arr_iso = (datetime.fromisoformat(booking_iso) + timedelta(days=1)).date().isoformat()
-    except Exception:
-        arr_iso = booking_iso
-
-    payload = {
-        "action": "do_booking",
-        "secret": secret,
-        "id_sector": SEMERU_SECTOR_ID,
-        "date_depart": booking_iso,
-        "date_arrival": arr_iso,
-        "pendamping": leader.get("pendamping", "0"),
-        "organisasi": leader.get("organisasi", ""),
-        "name": leader.get("name", ""),
-        "id_country": leader.get("id_country", "99"),
-        "birthdate": leader.get("birthdate", ""),
-        "leader_setuju": leader.get("leader_setuju", "0"),
-        "id_gender": leader.get("id_gender", "1"),
-        "id_identity": leader.get("id_identity", "1"),
-        "identity_no": leader.get("identity_no", ""),
-        "address": leader.get("address", ""),
-        "id_province": leader.get("id_province", ""),
-        "id_district": leader.get("id_district", ""),
-        "hp": leader.get("hp", ""),
-        "table-member_length": "10",
-        "bank": leader.get("bank", "qris"),
-        "termsCheckbox": "on",
-        "form_hash": form_hash or "",
-    }
-
-    # (4) tambah anggota (maks 9)
-    added = 0
-    for idx, m in enumerate(members, start=1):
-        if idx > 9:
-            log.warning("Melebihi 9 anggota, sisanya di-skip.")
-            break
-        if not (m.get("nama") or "").strip():
-            continue
-        m_payload = {
+    def _add_member(sess_obj: requests.Session, secret: str, form_hash: str, idx: int, m: dict) -> tuple[bool, str]:
+        payload = {
             "action": "member_update",
             "id": "",
-            "nama": m.get("nama", ""),
-            "birthdate": m.get("birthdate", ""),
-            "anggota_setuju": m.get("anggota_setuju", "0"),
-            "id_gender": m.get("id_gender", "1"),
-            "alamat": m.get("alamat", ""),
-            "id_identity": m.get("id_identity", "1"),
-            "identity_no": m.get("identity_no", ""),
-            "hp_member": m.get("hp_member", ""),
-            "hp_keluarga": m.get("hp_keluarga", ""),
-            "id_job": m.get("id_job", "6"),
-            "id_country": m.get("id_country", "99"),
             "secret": secret,
             "form_hash": form_hash or "",
+            "nama": m.get("nama",""),
+            "birthdate": m.get("birthdate",""),
+            "anggota_setuju": m.get("anggota_setuju","1"),
+            "id_gender": m.get("id_gender","1"),
+            "alamat": m.get("alamat",""),
+            "id_identity": m.get("id_identity","1"),
+            "identity_no": m.get("identity_no",""),
+            "hp_member": m.get("hp_member",""),
+            "hp_keluarga": m.get("hp_keluarga",""),
+            "id_job": m.get("id_job","6"),
+            "id_country": m.get("id_country","99"),
         }
+        r = sess_obj.post(ACTION_URL, data=payload, timeout=30)
+        ct = (r.headers.get("Content-Type") or "").lower()
+        if "json" in ct:
+            try:
+                dj = r.json()
+            except Exception:
+                return False, "Respon member_update bukan JSON"
+            ok = bool(dj.get("status", False))
+            return ok, str(dj.get("message") or "-")
+        return False, "Respon member_update non-JSON"
+
+    def _do_booking(sess_obj: requests.Session, secret: str, form_hash: str) -> tuple[bool, dict | None, str]:
         try:
-            resp_m = sess.post(ACTION_URL, data=m_payload, timeout=30)
-            _ct = (resp_m.headers.get("Content-Type") or "").lower()
-            if "json" in _ct:
-                _dj = resp_m.json()
-                if not _dj.get("status", True):
-                    log.warning("[member %s] server warn: %s", idx, _dj)
-            added += 1
-        except Exception as e:
-            log.warning("member_update gagal (anggota %s): %s", idx, e)
+            arr_iso = (datetime.fromisoformat(booking_iso) + timedelta(days=1)).date().isoformat()
+        except Exception:
+            arr_iso = booking_iso
+        bank_norm = {"qris":"qris","va-mandiri":"VA-Mandiri","va-bni":"VA-BNI"} \
+            .get((leader.get("bank") or "qris").strip().lower(), "qris")
+        bp = {
+            "action": "do_booking",
+            "secret": secret,
+            "form_hash": form_hash or "",
+            "id_sector": SEMERU_SECTOR_ID,
+            "id_site":   SEMERU_SITE_ID,
+            "site":      SEMERU_SITE_LABEL,
+            "date_depart": booking_iso,
+            "date_arrival": arr_iso,
+            "pendamping":     leader.get("pendamping","0"),
+            "organisasi":     leader.get("organisasi",""),
+            "name":           leader.get("name",""),
+            "id_country":     leader.get("id_country","99"),
+            "birthdate":      leader.get("birthdate",""),
+            "leader_setuju":  leader.get("leader_setuju","1"),
+            "id_gender":      leader.get("id_gender","1"),
+            "id_identity":    leader.get("id_identity","1"),
+            "identity_no":    leader.get("identity_no",""),
+            "address":        leader.get("address",""),
+            "id_province":    leader.get("id_province",""),
+            "id_district":    leader.get("id_district",""),
+            "hp":             leader.get("hp",""),
+            "table-member_length": "10",
+            "bank": bank_norm,
+            "termsCheckbox": "on",
+        }
+        r = sess_obj.post(ACTION_URL, data=bp, timeout=60)
+        ct = (r.headers.get("Content-Type") or "").lower()
+        if "json" not in ct:
+            return False, None, f"Respon non-JSON do_booking: {r.text[:400]}"
+        try:
+            dj = r.json()
+        except Exception:
+            return False, None, f"Respon do_booking tak bisa JSON: {r.text[:400]}"
+        return bool(dj.get("status")), dj, str(dj.get("message") or "-")
 
-    # do_booking
+    # ——— PRIME secret pertama
     try:
-        resp = sess.post(ACTION_URL, data=payload, timeout=60)
+        secret, form_hash = _prime_secret(sess)
+        logger.info("Token OK: secret_len=%d, form_hash_len=%d", len(secret or ""), len(form_hash or ""))
     except Exception as e:
-        return False, f"Gagal do_booking: {e}", time.perf_counter() - t0, None
+        return False, f"Gagal ekstrak token: {e}", time.perf_counter()-t0, None
 
-    ct = (resp.headers.get("Content-Type") or "").lower()
-    if "json" not in ct:
-        return False, f"Respon non-JSON do_booking: {resp.text[:400]}", time.perf_counter() - t0, None
+    # ——— Coba tambah 1 anggota dulu
+    first_add_msg = ""
+    ok_first, msg_first = _add_member(sess, secret, form_hash, 1, safe_members[0])
+    if ok_first:
+        first_add_msg = "OK"
+    else:
+        first_add_msg = msg_first
+        logger.warning("[member 1] server warn: %s", msg_first)
 
-    try:
-        data = resp.json()
-    except Exception:
-        return False, f"Respon do_booking tak bisa JSON: {resp.text[:400]}", time.perf_counter() - t0, None
+    # ——— Jika langsung "Maksimal 9 anggota" → re-prime secret sekali
+    if (not ok_first) and ("maksimal 9" in msg_first.lower()):
+        try:
+            # fresh session + secret (minim cache)
+            sess = _new_session()
+            secret, form_hash = _prime_secret(sess)
+            ok_first, msg_first = _add_member(sess, secret, form_hash, 1, safe_members[0])
+            logger.warning("Re-prime secret → add member 1: %s (%s)", "OK" if ok_first else "FAIL", msg_first)
+        except Exception as e:
+            logger.warning("Re-prime gagal: %s", e)
 
-    if not data.get("status"):
-        return False, f"Booking Semeru GAGAL {secret[:12]}...: {data.get('message') or data}", time.perf_counter() - t0, data
+    added = 0
+    fail_msgs: list[str] = []
+
+    if ok_first:
+        added += 1
+        # Jalur A: tambah sisa anggota (2..9) lalu do_booking
+        for i, m in enumerate(safe_members[1:9], start=2):
+            ok_m, msg_m = _add_member(sess, secret, form_hash, i, m)
+            if ok_m:
+                added += 1
+            else:
+                fail_msgs.append(f"#{i}: {msg_m}")
+                logger.warning("[member %s] server warn: %s", i, msg_m)
+                if "maksimal 9" in msg_m.lower():
+                    break
+            time.sleep(0.2)
+        # commit jumlah
+        try:
+            sess.post(ACTION_URL, data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""}, timeout=20)
+        except Exception:
+            pass
+        ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
+
+    else:
+        # Jalur B: do_booking dulu (ketua + Anggota 1), baru tambah sisa
+        ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
+        if not ok_do and "minimal 2" in msg_do.lower():
+            # server menuntut minimal 2; coba paksakan tambah 1 lagi & retry sekali
+            ok_retry, msg_retry = _add_member(sess, secret, form_hash, 1, safe_members[0])
+            logger.warning("Fallback add first member → %s (%s)", "OK" if ok_retry else "FAIL", msg_retry)
+            ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
+
+        # setelah booking sukses, baru tambah sisa anggota
+        if ok_do:
+            for i, m in enumerate(safe_members[1:9], start=2):
+                ok_m, msg_m = _add_member(sess, secret, form_hash, i, m)
+                if ok_m:
+                    added += 1
+                else:
+                    fail_msgs.append(f"#{i}: {msg_m}")
+                    logger.warning("[member %s] server warn: %s", i, msg_m)
+                    if "maksimal 9" in msg_m.lower():
+                        break
+                time.sleep(0.2)
+            try:
+                sess.post(ACTION_URL, data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""}, timeout=20)
+            except Exception:
+                pass
+
+    if not ok_do:
+        return False, f"Booking Semeru GAGAL {secret[:12]}...: {msg_do}", time.perf_counter()-t0, (data_do or None)
 
     elapsed = time.perf_counter() - t0
-    link = data.get("booking_link") or data.get("link_redirect") or "-"
+    link = (data_do or {}).get("booking_link") or (data_do or {}).get("link_redirect") or "-"
+    extra_note = ""
+    if fail_msgs:
+        extra_note = "\nCatatan anggota gagal:\n- " + "\n- ".join(fail_msgs[:5])
+        if len(fail_msgs) > 5:
+            extra_note += f"\n- (+{len(fail_msgs)-5} error lainnya)"
     msg = ("Booking Semeru BERHASIL.\n"
-           f"Anggota ditambahkan: {added}\n"
+           f"Anggota berhasil ditambahkan: {added} (di luar ketua)\n"
            f"Link: {link}\n"
-           f"Server: {data.get('message', '-')}")
-    return True, msg, elapsed, data
+           f"Server: {(data_do or {}).get('message','-')}"
+           f"{extra_note}")
+    return True, msg, elapsed, data_do
 
 # =================== COMMON FORM PARSER (Bromo) ===================
 FORM_KEYS_BROMO = {
