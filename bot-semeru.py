@@ -286,6 +286,13 @@ def check_capacity(iso_date: str, site: str) -> dict | None:
 
         # Timeout tuple: (connect, read) → lebih responsif saat server lemot
         resp = sess.post(CAP_URL, data=payload, headers=headers, timeout=(7, 12))
+        log.info(
+            "check_capacity response (%s %s) status=%s body=%s",
+            site,
+            iso_date,
+            resp.status_code,
+            resp.text,
+        )
         # Bisa saja 200 tapi body kosong → anggap gagal
         if resp.status_code != 200 or not (resp.text or "").strip():
             log.warning("check_capacity: status=%s, empty=%s, site=%s, iso=%s",
