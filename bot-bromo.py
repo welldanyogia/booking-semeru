@@ -112,6 +112,12 @@ def check_capacity(iso_date: str) -> dict | None:
     payload = {"action": "kapasitas", "year_month": year_month, "id_site": ID_SITE}
     headers = {"User-Agent": "Mozilla/5.0"}
     resp = requests.post(CAP_URL, data=payload, headers=headers, timeout=30)
+    log.info(
+        "check_capacity response iso=%s status=%s body=%s",
+        iso_date,
+        resp.status_code,
+        resp.text,
+    )
     soup = BeautifulSoup(resp.text, "lxml")
     rows = soup.select("table.table tbody tr")
     return find_quota_for_date(rows, iso_date)
