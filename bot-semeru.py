@@ -18,6 +18,8 @@ from difflib import get_close_matches
 from telegram.constants import ParseMode
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import CallbackQueryHandler
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 # Setup logging
@@ -232,29 +234,71 @@ def find_quota_for_date(rows, iso_date: str):
             return {"tanggal_cell": tanggal_text, "quota": quota, "status": status}
     return None
 
+# Tambahkan import ini di bagian import atas file (sekali saja)
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+
+def _requests_session_with_retries(total: int = 3, backoff: float = 0.5) -> requests.Session:
+    """
+    Session requests dengan retry & backoff:
+    - retry untuk connect/read/status 429/502/503/504
+    - allowed_methods: POST & GET
+    """
+    s = requests.Session()
+    retry = Retry(
+        total=total,
+        connect=total,
+        read=total,
+        status=total,
+        backoff_factor=backoff,
+        status_forcelist=[429, 502, 503, 504],
+        allowed_methods={"GET", "POST"},
+        raise_on_status=False,
+        respect_retry_after_header=True,
+    )
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=10, pool_maxsize=10)
+    s.mount("https://", adapter)
+    s.mount("http://", adapter)
+    return s
+
 def check_capacity(iso_date: str, site: str) -> dict | None:
     """
+    Aman dari timeout/NetworkError: kalau gagal jaringan → return None (tidak meledak).
     site: 'bromo' | 'semeru'
     """
-    year_month = iso_date[:7]
-    if site == "bromo":
-        site_id = "4"
-    elif site == "semeru":
-        site_id = "8"
-    else:
-        raise ValueError("site harus 'bromo' atau 'semeru'")
+    try:
+        year_month = iso_date[:7]
+        if site == "bromo":
+            site_id = "4"
+        elif site == "semeru":
+            site_id = "8"
+        else:
+            raise ValueError("site harus 'bromo' atau 'semeru'")
 
-    payload = {
-        "action": "kapasitas",
-        "id_site": site_id,
-        "year_month": year_month
-    }
-    headers = {"User-Agent": "Mozilla/5.0"}
-    resp = requests.post(CAP_URL, data=payload, headers=headers, timeout=30)
+        payload = {"action": "kapasitas", "id_site": site_id, "year_month": year_month}
 
-    soup = BeautifulSoup(resp.text, "lxml")
-    rows = soup.select("table.table tbody tr")
-    return find_quota_for_date(rows, iso_date)
+        sess = _requests_session_with_retries(total=3, backoff=0.6)
+        # header ringan + UA yang sudah kamu pakai
+        headers = {
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "*/*",
+        }
+
+        # Timeout tuple: (connect, read) → lebih responsif saat server lemot
+        resp = sess.post(CAP_URL, data=payload, headers=headers, timeout=(7, 12))
+        # Bisa saja 200 tapi body kosong → anggap gagal
+        if resp.status_code != 200 or not (resp.text or "").strip():
+            log.warning("check_capacity: status=%s, empty=%s, site=%s, iso=%s",
+                        resp.status_code, not bool((resp.text or '').strip()), site, iso_date)
+            return None
+
+        soup = BeautifulSoup(resp.text, "lxml")
+        rows = soup.select("table.table tbody tr")
+        return find_quota_for_date(rows, iso_date)
+    except Exception as e:
+        # Tangkap semua error jaringan/parse supaya tidak crash handler lain
+        log.warning("check_capacity error (%s %s): %s", site, iso_date, e)
+        return None
 
 
 def make_session_with_cookies(ci_session: str, extra_cookies: dict | None = None):
