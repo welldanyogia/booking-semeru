@@ -286,6 +286,13 @@ def check_capacity(iso_date: str, site: str) -> dict | None:
 
         # Timeout tuple: (connect, read) → lebih responsif saat server lemot
         resp = sess.post(CAP_URL, data=payload, headers=headers, timeout=(7, 12))
+        log.info(
+            "check_capacity response (%s %s) status=%s body=%s",
+            site,
+            iso_date,
+            resp.status_code,
+            resp.text,
+        )
         # Bisa saja 200 tapi body kosong → anggap gagal
         if resp.status_code != 200 or not (resp.text or "").strip():
             log.warning("check_capacity: status=%s, empty=%s, site=%s, iso=%s",
@@ -1166,7 +1173,7 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.job.chat_id
 
     # --- DETEKSI INTERVAL AKTUAL DARI JOB (PTB v21: timedelta) ---
-    actual_interval = 20
+    actual_interval = 60
     try:
         if getattr(context.job, "interval", None):
             iv = context.job.interval  # timedelta
@@ -1175,7 +1182,7 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
         pass
 
     # --- PRIORITAS: pakai nilai yang dikirim lewat data, fallback ke interval aktual, lalu default ---
-    interval_seconds = int(data.get("interval_seconds") or actual_interval or 20)
+    interval_seconds = int(data.get("interval_seconds") or actual_interval or 60)
 
     # Kompatibilitas lama: kalau ada "notify_every" (dalam menit), konversi ke ticks
     if "notify_every_ticks" in data:
