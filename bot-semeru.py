@@ -22,6 +22,9 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import time
 from datetime import datetime, timedelta
+import re
+from urllib.parse import urlparse, parse_qs
+
 
 # Setup logging
 logging.basicConfig(
@@ -40,6 +43,10 @@ CAP_URL    = f"{BASE}/website/home/get_view"
 ACTION_URL = f"{BASE}/website/booking/action"
 COMBO_URL  = f"{BASE}/website/home/combo"
 ASIA_JAKARTA = pytz.timezone("Asia/Jakarta")
+# === DataTables grid endpoints (untuk lookup detail by kode) ===
+GRID_MEMBER  = f"{BASE}/member/booking/grid"
+GRID_WEBSITE = f"{BASE}/website/booking/grid"
+
 
 # --- Bromo ---
 BROMO_SITE_ID   = "4"
@@ -331,33 +338,56 @@ def make_session_with_cookies(ci_session: str, extra_cookies: dict | None = None
 def fetch_districts_by_province(id_province: str, ci_session: str = "", extra_cookies: dict | None = None) -> list[tuple[str, str]]:
     """
     Return list [(kode_kabkota, NAMA_KAB/KOTA), ...]
-    Endpoint 'combo' beberapa kali minta cookie + header AJAX dan nama field bisa beda-beda.
+    Endpoint 'combo' terkadang minta cookie + header AJAX + referer yang valid.
+    Mendukung action=district (baru), fallback ke kabupaten/varian lama.
     """
     sess = make_session_with_cookies(ci_session, extra_cookies)
 
-    # Header ala AJAX request dari browser
-    referer = f"{BASE}{SITE_PATH_BROMO}?date_depart={(datetime.now().date()).isoformat()}"
-    sess.headers.update({
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    # --- Preflight: hangatkan cookie & referer agar backend CI "percaya"
+    iso_today = (datetime.now().date()).isoformat()
+    preflight_urls = [
+        f"{BASE}/",
+        f"{BASE}/member/booking",
+        f"{BASE}{SITE_PATH_BROMO}?date_depart={iso_today}",
+        f"{BASE}{SITE_PATH_SEMERU}?date_depart={iso_today}",
+        f"{BASE}/peraturan/bromo",
+        f"{BASE}/peraturan/semeru",
+    ]
+    for url in preflight_urls:
+        try:
+            sess.get(url, timeout=10)
+        except Exception:
+            pass  # biarkan saja; tujuan hanya mengisi cookie/cache
+
+    # --- Header ala AJAX request dari browser
+    ajax_headers = {
+        "Accept": "application/json, text/javascript, */*; q=0.01",
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
         "X-Requested-With": "XMLHttpRequest",
         "Origin": BASE,
-        "Referer": referer,
         "Connection": "keep-alive",
-    })
-
-    # Coba beberapa bentuk payload yang umum dipakai backend CI
-    candidates = [
-        {"id_province": str(id_province)},
-        {"id": str(id_province)},
-        {"province": str(id_province)},
-        {"action": "kabupaten", "id_province": str(id_province)},
-        {"action": "kabupaten", "id": str(id_province)},
+    }
+    referers = [
+        f"{BASE}/member/booking",
+        f"{BASE}{SITE_PATH_BROMO}?date_depart={iso_today}",
+        f"{BASE}{SITE_PATH_SEMERU}?date_depart={iso_today}",
     ]
 
-    # Helper parse (HTML <option> atau JSON {options:[{value,text}]})
+    # --- Kandidat payload (urutkan yg paling mungkin dulu)
+    candidates = [
+        {"action": "district",  "id_province": str(id_province)},  # sesuai network log terakhirmu
+        {"action": "district",  "id":           str(id_province)},
+        {"action": "kabupaten", "id_province": str(id_province)},  # fallback lama
+        {"action": "kabupaten", "id":           str(id_province)},
+        {"id_province": str(id_province)},                          # very-lax fallback
+        {"id":           str(id_province)},
+        {"province":     str(id_province)},
+    ]
+
+    # --- Helper parse (HTML <option> atau JSON {options:[{value,text}]})
     def parse_options(text: str) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
-        soup = BeautifulSoup(text, "lxml")
+        soup = BeautifulSoup(text or "", "lxml")
         opts = soup.select("option")
         if opts:
             for opt in opts:
@@ -367,12 +397,10 @@ def fetch_districts_by_province(id_province: str, ci_session: str = "", extra_co
                     continue
                 out.append((val, name))
             return out
-
         # kemungkinan JSON
         try:
-            j = json.loads(text)
-            # contoh skema generik: {"options":[{"value":"3578","text":"KOTA SURABAYA"}, ...]}
-            if isinstance(j, dict) and "options" in j and isinstance(j["options"], list):
+            j = json.loads(text or "")
+            if isinstance(j, dict) and isinstance(j.get("options"), list):
                 for it in j["options"]:
                     val = (it.get("value") or "").strip()
                     name = (it.get("text") or "").strip()
@@ -382,20 +410,38 @@ def fetch_districts_by_province(id_province: str, ci_session: str = "", extra_co
             pass
         return out
 
-    # Coba satu per satu payload sampai ada hasil
-    for payload in candidates:
-        try:
-            resp = sess.post(COMBO_URL, data=payload, timeout=30)
-            resp.raise_for_status()
-            pairs = parse_options(resp.text)
-            if pairs:
-                return pairs
-        except Exception as e:
-            log.debug("combo payload %s error: %s", payload, e)
+    last_resp = None
+    # --- Coba beberapa referer x beberapa payload
+    for ref in referers:
+        sess.headers.update({**ajax_headers, "Referer": ref})
+        for payload in candidates:
+            try:
+                resp = sess.post(COMBO_URL, data=payload, timeout=15)
+                last_resp = resp
+                # kadang server set ci_session baru → ulang sekali dgn referer sama
+                if (resp.status_code != 200) or not (resp.text or "").strip():
+                    # jeda kecil + retry
+                    time.sleep(0.4)
+                    resp = sess.post(COMBO_URL, data=payload, timeout=15)
+                    last_resp = resp
 
-    # Debug bantu: potongan respon terakhir
+                if resp.status_code == 200 and (resp.text or "").strip():
+                    pairs = parse_options(resp.text)
+                    if pairs:
+                        return pairs
+            except Exception as e:
+                log.debug("combo ref=%s payload=%s error=%s", ref, payload, e)
+
+    # --- Debug bantu bila kosong
     try:
-        log.warning("combo(%s) kosong. Sample response: %s", id_province, resp.text[:200])
+        if last_resp is not None:
+            snip = (last_resp.text or "")[:300].replace("\n", " ")
+            log.warning("combo(%s) kosong. HTTP %s | referer=%s | sample=%s",
+                        id_province, last_resp.status_code,
+                        last_resp.request.headers.get("Referer"),
+                        snip or "(<empty body>)")
+        else:
+            log.warning("combo(%s) tidak ada respons sama sekali.", id_province)
     except Exception:
         pass
     return []
@@ -421,6 +467,120 @@ def split_long_message(msg: str, limit: int = 3900) -> list[str]:
     if cur:
         parts.append(cur)
     return parts
+
+# ---------- Lookup by Kode Booking (Leader + Anggota via secret) ----------
+from urllib.parse import unquote
+
+def _grid_headers(ci_session: str) -> dict:
+    return {
+        "accept": "application/json, text/javascript, */*; q=0.01",
+        "content-type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "origin": BASE,
+        "referer": f"{BASE}/member/booking",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Safari/537.36",
+        "x-requested-with": "XMLHttpRequest",
+        "cookie": f"ci_session={ci_session}",
+    }
+
+def get_booking_by_code_api(booking_code: str, ci_session: str) -> dict:
+    """
+    Cari 1 row booking di /member/booking/grid pakai server-side search[value]=<kode>.
+    Return row dict lengkap (berisi secret, form_hash, field ketua, dll).
+    """
+    payload = {
+        "draw": "1",
+        "columns[0][data]": "id", "columns[0][name]": "", "columns[0][searchable]": "true", "columns[0][orderable]": "true",
+        "columns[0][search][value]": "", "columns[0][search][regex]": "false",
+        "columns[1][data]": "code", "columns[1][name]": "", "columns[1][searchable]": "true", "columns[1][orderable]": "true",
+        "columns[1][search][value]": "", "columns[1][search][regex]": "false",
+        "order[0][column]": "0", "order[0][dir]": "DESC",
+        "start": "0", "length": "10",
+        "search[value]": booking_code,
+        "search[regex]": "false",
+    }
+    r = requests.post(GRID_MEMBER, headers=_grid_headers(ci_session), data=payload, timeout=30)
+    r.raise_for_status()
+    js = r.json()
+    rows = js.get("data") or js.get("aaData") or []
+    if not rows:
+        raise RuntimeError(f"Booking {booking_code} tidak ditemukan atau tidak terlihat oleh akunmu.")
+    for rr in rows:
+        if str(rr.get("code","")).strip() == booking_code:
+            return rr
+    return rows[0]  # fallback kalau server mengembalikan partial
+
+def get_leader_from_row(row: dict) -> dict:
+    return {
+        "leader_name": row.get("booking_leader_name"),
+        "leader_hp": row.get("booking_leader_hp"),
+        "leader_identity_no": row.get("booking_leader_identity_no"),
+        "leader_address": row.get("booking_leader_address"),
+        "leader_birthdate": row.get("booking_leader_birthdate"),
+        "email": row.get("email"),
+        "country": row.get("country"),
+        "code": row.get("code"),
+        "date_depart": row.get("date_depart"),
+        "date_arrival": row.get("date_arrival"),
+        "booking_status": row.get("booking_status"),
+        "total_pendaki": row.get("total_pendaki"),
+        "form_hash": row.get("form_hash"),
+        "secret": row.get("secret"),
+    }
+
+def _build_website_grid_payload(secret_raw: str, start=0, length=100, search_value: str=""):
+    sec_val = unquote(secret_raw)
+    columns = [
+        ("nama",        True, True,  ""),
+        ("country",     True, True,  ""),
+        ("hp_member",   True, True,  ""),
+        ("birthdate",   True, True,  ""),
+        ("identity_no", True, True,  ""),
+        ("",            True, False, ""),
+    ]
+    data = {
+        "secret": sec_val,
+        "draw": "2",
+        "order[0][column]": "0",
+        "order[0][dir]"   : "asc",
+        "start": str(start),
+        "length": str(length),
+        "search[value]": search_value or "",
+        "search[regex]": "false",
+    }
+    for idx, (col, searchable, orderable, search_val) in enumerate(columns):
+        data[f"columns[{idx}][data]"] = col
+        data[f"columns[{idx}][name]"] = ""
+        data[f"columns[{idx}][searchable]"] = "true" if searchable else "false"
+        data[f"columns[{idx}][orderable]"]  = "true" if orderable  else "false"
+        data[f"columns[{idx}][search][value]"] = search_val
+        data[f"columns[{idx}][search][regex]"] = "false"
+    return data
+
+def get_members_by_secret(secret: str, ci_session: str, page_size: int = 200, search_value: str = "") -> tuple[list, int]:
+    """
+    Ambil seluruh anggota dari /website/booking/grid menggunakan secret yang didapat dari grid member.
+    Bisa difilter (search_value) dan handle paging otomatis.
+    Return (list_rows, total).
+    """
+    headers = _grid_headers(ci_session)
+    headers["referer"] = f"{BASE}/booking/site/semeru"
+    r0 = requests.post(GRID_WEBSITE, headers=headers,
+                       data=_build_website_grid_payload(secret, 0, page_size, search_value),
+                       timeout=30)
+    r0.raise_for_status()
+    j0 = r0.json()
+    total = int(j0.get("recordsTotal", j0.get("iTotalRecords", 0)))
+    rows = list(j0.get("data") or j0.get("aaData") or [])
+    start = page_size
+    while start < total:
+        rx = requests.post(GRID_WEBSITE, headers=headers,
+                           data=_build_website_grid_payload(secret, start, page_size, search_value),
+                           timeout=30)
+        rx.raise_for_status()
+        jx = rx.json()
+        rows += (jx.get("data") or jx.get("aaData") or [])
+        start += page_size
+    return rows, total
 
 
 # =================== BROMO FLOWS ===================
@@ -865,6 +1025,55 @@ def _preflight_sem(sess: requests.Session):
         r1.raise_for_status()
     except Exception as e:
         log.debug("Preflight step 2 gagal (peraturan): %s", e)
+# === SEMERU: list & delete existing members ===
+def semeru_list_members(sess: requests.Session, booking_iso: str) -> list[dict]:
+    """
+    Ambil daftar anggota yg sudah tersimpan di server (per sesi/secret & tanggal).
+    Return list of rows (id, identity_no, nama, secret, date_depart, dll).
+    """
+    try:
+        # Banyak implementasi CI/DataTables cukup pakai draw/start/length.
+        # Kita kirim minimal param + tanggal biar server “tahu konteks”.
+        payload = {
+            "draw": "1",
+            "start": "0",
+            "length": "200",
+            "date_depart": booking_iso,   # sering dipakai sebagai filter server-side
+        }
+        r = sess.post(f"{BASE}/website/booking/grid", data=payload, timeout=30,
+                      headers={"X-Requested-With": "XMLHttpRequest"})
+        r.raise_for_status()
+        j = r.json()
+        data = j.get("data", [])
+        # normalisasi key penting
+        out = []
+        for row in data:
+            out.append({
+                "id":            str(row.get("id") or ""),
+                "identity_no":   str(row.get("identity_no") or ""),
+                "nama":          str(row.get("nama") or ""),
+                "secret":        str(row.get("secret") or ""),
+                "date_depart":   str(row.get("date_depart") or ""),
+                "date_arrival":  str(row.get("date_arrival") or ""),
+            })
+        return out
+    except Exception as e:
+        log.warning("semeru_list_members error: %s", e)
+        return []
+
+def semeru_member_delete(sess: requests.Session, secret: str, member_id: str) -> tuple[bool, str]:
+    """
+    Hapus satu anggota by id (row.id dari grid) menggunakan secret yg relevan.
+    """
+    payload = {
+        "action": "member_delete",
+        "secret": secret,
+        "id":     member_id,
+    }
+    is_json, j, raw = _post_json(sess, ACTION_URL, payload, timeout=30)
+    if is_json and isinstance(j, dict):
+        return bool(j.get("status", False)), str(j.get("message") or "-")
+    return False, (raw[:160] + "…")
 
 def do_booking_flow_semeru(
     ci_session: str,
@@ -1023,6 +1232,28 @@ def do_booking_flow_semeru(
     except Exception as e:
         return False, f"Gagal ekstrak token: {e}", time.perf_counter()-t0, None
 
+    # === Bersihkan anggota yang sudah terdaftar di secret/tanggal ini ===
+    try:
+        existing = semeru_list_members(sess, booking_iso)
+        # Filter yang match tanggal (server kadang kembalikan beberapa secret/tgl)
+        to_del = [row for row in existing if row.get("date_depart") == booking_iso]
+        if to_del:
+            logger.info("Ditemukan %d anggota existing → hapus dulu", len(to_del))
+            # pilih secret yg sesuai; gunakan 'secret' yg kita baru prime kalau cocok,
+            # kalau tidak ada, pakai secret per-row (server izinkan).
+            for row in to_del:
+                row_secret = row.get("secret") or secret
+                okdel, msgdel = semeru_member_delete(sess, row_secret, row["id"])
+                logger.info("Del member id=%s (%s) → %s (%s)", row["id"], row.get("nama"), "OK" if okdel else "FAIL", msgdel)
+                time.sleep(0.15)
+            # validasi ulang
+            try:
+                sess.post(ACTION_URL, data={"action":"validate_booking","secret":secret,"form_hash":form_hash or ""}, timeout=20)
+            except Exception:
+                pass
+    except Exception as e:
+        logger.warning("Cleanup existing members gagal: %s", e)
+
     # ——— Coba tambah 1 anggota dulu
     first_add_msg = ""
     ok_first, msg_first = _add_member(sess, secret, form_hash, 1, safe_members[0])
@@ -1092,21 +1323,85 @@ def do_booking_flow_semeru(
             except Exception:
                 pass
 
+    # … setelah baris:
     if not ok_do:
-        return False, f"Booking Semeru GAGAL {secret[:12]}...: {msg_do}", time.perf_counter()-t0, (data_do or None)
+        # Tambahkan blok tangani duplikat identitas:
+        if "nomor identitas ganda" in msg_do.lower():
+            logger.warning("Deteksi duplikat identitas → lakukan cleanup & retry sekali")
+            # cleanup
+            try:
+                existing = semeru_list_members(sess, booking_iso)
+                for row in existing:
+                    if row.get("date_depart") == booking_iso:
+                        row_secret = row.get("secret") or secret
+                        semeru_member_delete(sess, row_secret, row["id"])
+                        time.sleep(0.1)
+                sess.post(ACTION_URL,
+                          data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""},
+                          timeout=20)
+            except Exception as e:
+                logger.warning("Cleanup on duplicate fail: %s", e)
+            # retry booking sekali
+            ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
 
-    elapsed = time.perf_counter() - t0
-    link = (data_do or {}).get("booking_link") or (data_do or {}).get("link_redirect") or "-"
-    extra_note = ""
-    if fail_msgs:
-        extra_note = "\nCatatan anggota gagal:\n- " + "\n- ".join(fail_msgs[:5])
-        if len(fail_msgs) > 5:
-            extra_note += f"\n- (+{len(fail_msgs)-5} error lainnya)"
-    msg = ("Booking Semeru BERHASIL.\n"
-           f"Anggota berhasil ditambahkan: {added} (di luar ketua)\n"
-           f"Link: {link}\n"
-           f"Server: {(data_do or {}).get('message','-')}"
-           f"{extra_note}")
+        if not ok_do:
+            return False, f"Booking Semeru GAGAL {secret[:12]}...: {msg_do}", time.perf_counter() - t0, (
+                        data_do or None)
+
+        # ——— SUKSES → susun pesan dengan KODE BOOKING
+        elapsed = time.perf_counter() - t0
+        link = (data_do or {}).get("booking_link") or (data_do or {}).get("link_redirect") or "-"
+
+        # coba tebak kode booking dari JSON / link
+        def _guess_booking_code(data_obj: dict | None, link_text: str) -> str | None:
+            # 1) field langsung
+            for k in ("code", "booking_code", "bookingCode"):
+                v = (data_obj or {}).get(k)
+                if isinstance(v, str) and "-" in v:
+                    return v.strip()
+            # 2) nested obj
+            for node in ("booking", "data", "result"):
+                sub = (data_obj or {}).get(node)
+                if isinstance(sub, dict):
+                    for k in ("code", "booking_code"):
+                        v = sub.get(k)
+                        if isinstance(v, str) and "-" in v:
+                            return v.strip()
+            # 3) dari link: ?code=... atau segmen path
+            if link_text and isinstance(link_text, str):
+                m = re.search(r"[?&]code=([A-Z0-9\-]+)", link_text)
+                if m:
+                    return m.group(1)
+                m = re.search(r"([A-Z]{2,}-[0-9\-]{6,})", link_text)
+                if m:
+                    return m.group(1)
+                parts = [p for p in link_text.split("/") if p]
+                for p in reversed(parts):
+                    if re.match(r"^[A-Z]{2,}-[0-9\-]{6,}$", p):
+                        return p
+            return None
+
+        booking_code = _guess_booking_code(data_do, link)
+
+        extra_note = ""
+        if fail_msgs:
+            extra_note = "\nCatatan anggota gagal:\n- " + "\n- ".join(fail_msgs[:5])
+            if len(fail_msgs) > 5:
+                extra_note += f"\n- (+{len(fail_msgs) - 5} error lainnya)"
+
+        # TAMPILKAN kode booking + shortcut command detail
+        # ganti '/detail_booking' jika command-mu bernama lain (mis. '/booking_detail')
+        cmd_hint = f"\nDetail cepat: /detail_booking {booking_code}" if booking_code else ""
+        msg = (
+            "✅ Booking Semeru BERHASIL.\n"
+            f"Kode Booking: {booking_code or '-'}\n"
+            f"Link: {link}\n"
+            f"Anggota berhasil ditambahkan: {added} (di luar ketua)\n"
+            f"Server: {(data_do or {}).get('message', '-')}"
+            f"{cmd_hint}"
+            f"{extra_note}"
+        )
+
     return True, msg, elapsed, data_do
 
 # =================== COMMON FORM PARSER (Bromo) ===================
@@ -1207,35 +1502,49 @@ def parse_form_block_bromo(text: str) -> tuple[dict, dict, int | None, list]:
 
 # =================== TELEGRAM ===================
 HELP_TEXT = (
-    "Perintah:\n"
-    "• /start — cek bot\n"
-    "• /help — lihat bantuan ini\n"
-    "• /set_session <ci_session>\n"
-    "• /examples — Contoh Format Booking\n"
-    "\n— Lookup Wilayah —\n"
-    "• /prov <nama/kode>  → kode provinsi (contoh: /prov Jatim  |  /prov 35)\n"
-    "• /kab <nama/kode>   → daftar kab/kota utk provinsi (contoh: /kab \"Jawa Timur\"  |  /kab 35)\n"
-    "\n— BROMO —\n"
-    "• /book <tgl_booking>\n"
-    "  - Contoh tanggal: 2025-09-30  |  30-09-2025  |  30 September 2025\n"
-    "• /schedule <tgl_booking> <tgl_eksekusi> <HH:MM[:SS]>\n"
-    "  - Contoh: /schedule 2025-09-30 2025-09-29 23:59\n"
-    "\n— SEMERU —\n"
-    "• /book_semeru <tgl_booking>\n"
-    "• /schedule_semeru <tgl_booking> <tgl_eksekusi> <HH:MM[:SS]>\n"
-    "\n— Manajemen Job —\n"
-    "• /jobs\n"
-    "• /job_detail <job|index>\n"
-    "• /job_cancel <job|index>\n"
-    "• /job_edit_time <job|index> <exec_YYYY-MM-DD> <HH:MM[:SS]>\n"
-    "• /job_edit_fields <job|index> key=value;...\n"
-    "• /job_edit_when <job|index> <booking_YYYY-MM-DD> <exec_YYYY-MM-DD> <HH:MM[:SS]>\n"
-    "• /job_update_cookies <job|index> _ga=...;_ga_TMVP85FKW9=...;ci_session=...\n"
-    "\nTips:\n"
-    "- ID Provinsi boleh diisi kode atau nama (mis. 35 atau Jawa Timur). Gunakan /kab untuk melihat kode kab/kota.\n"
-    "- Format tanggal fleksibel seperti contoh di atas.\n"
-    "- Lihat contoh lengkap isi form: /examples\n"
+    "📖 <b>Panduan Perintah</b>\n\n"
+    "🔹 <b>Dasar</b>\n"
+    "   • /start — cek bot\n"
+    "   • /help — tampilkan bantuan ini\n"
+    "   • /set_session <ci_session>\n"
+    "   • /examples — contoh format booking\n\n"
+
+    "🌍 <b>Lookup Wilayah</b>\n"
+    "   • /prov <nama/kode>\n"
+    "     └─ contoh: <code>/prov Jatim</code> | <code>/prov 35</code>\n"
+    "   • /kab <nama/kode>\n"
+    "     └─ contoh: <code>/kab \"Jawa Timur\"</code> | <code>/kab 35</code>\n\n"
+
+    "⛰️ <b>BROMO</b>\n"
+    "   • /book <tgl_booking>\n"
+    "     └─ contoh: <code>2025-09-30</code> | <code>30-09-2025</code> | <code>30 September 2025</code>\n"
+    "   • /schedule <tgl_booking> <tgl_eksekusi> <HH:MM[:SS]>\n"
+    "     └─ contoh: <code>/schedule 2025-09-30 2025-09-29 23:59</code>\n\n"
+
+    "🏔️ <b>SEMERU</b>\n"
+    "   • /book_semeru <tgl_booking>\n"
+    "   • /schedule_semeru <tgl_booking> <tgl_eksekusi> <HH:MM[:SS]>\n\n"
+
+    "🗂️ <b>Manajemen Job</b>\n"
+    "   • /jobs — daftar job\n"
+    "   • /job_detail <job|index>\n"
+    "   • /job_cancel <job|index>\n"
+    "   • /job_edit_time <job|index> <exec_YYYY-MM-DD> <HH:MM[:SS]>\n"
+    "   • /job_edit_fields <job|index> key=value;...\n"
+    "   • /job_edit_when <job|index> <booking_YYYY-MM-DD> <exec_YYYY-MM-DD> <HH:MM[:SS]>\n"
+    "   • /job_update_cookies <job|index> _ga=...;_ga_TMVP85FKW9=...;ci_session=...\n\n"
+
+    "🔎 <b>Lookup Booking</b>\n"
+    "   • /booking_detail <KODE_BOOKING> [filter]\n"
+    "     └─ tampilkan ketua + semua anggota (opsional filter nama/NIK/HP)\n\n"
+
+    "💡 <b>Tips</b>\n"
+    "   • ID Provinsi bisa pakai kode atau nama (mis. 35 atau Jawa Timur)\n"
+    "   • Gunakan /kab untuk lihat daftar kab/kota dari provinsi\n"
+    "   • Format tanggal fleksibel (YYYY-MM-DD, DD-MM-YYYY, atau '30 September 2025')\n"
+    "   • Lihat contoh lengkap isi form: /examples\n"
 )
+
 
 FORMAT_BROMO_EXAMPLE = (
     "[Contoh Isi Form BROMO]\n"
@@ -2237,6 +2546,90 @@ async def on_jobs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await q.edit_message_text("Aksi tidak dikenali.")
 
+def _mask(s: str | None, head: int = 6, tail: int = 4) -> str:
+    if not s: return "-"
+    if len(s) <= head + tail: return s
+    return s[:head] + "…" + s[-tail:]
+
+async def booking_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /booking_detail <KODE_BOOKING> [filter]
+    Ambil detail ketua (grid member) + semua anggota (website grid via secret).
+    """
+    uid = str(update.effective_user.id)
+    ci = get_ci(uid)
+    if not ci:
+        await update.message.reply_text("Set dulu /set_session <ci_session>.")
+        return
+
+    if not context.args:
+        await update.message.reply_text("Format: /booking_detail <KODE_BOOKING> [filter]")
+        return
+
+    booking_code = context.args[0].strip()
+    filter_q = " ".join(context.args[1:]).strip() if len(context.args) > 1 else ""
+
+    try:
+        row = get_booking_by_code_api(booking_code, ci)
+    except Exception as e:
+        await update.message.reply_text(f"Gagal ambil booking: {e}")
+        return
+
+    leader = get_leader_from_row(row)
+    secret = leader.get("secret") or row.get("secret")
+    if not secret:
+        await update.message.reply_text("Field 'secret' tidak ditemukan di grid.")
+        return
+
+    try:
+        members, total = get_members_by_secret(secret, ci_session=ci, page_size=200, search_value=filter_q)
+    except Exception as e:
+        await update.message.reply_text(f"Gagal ambil anggota: {e}")
+        return
+
+    head = (
+        f"📦 <b>Booking</b> <code>{leader.get('code','-')}</code>\n"
+        f"Status: {leader.get('booking_status','-')} | Tgl: {leader.get('date_depart','-')} → {leader.get('date_arrival','-')}\n"
+        f"Total pendaki (server): {leader.get('total_pendaki','-')}\n"
+        f"Secret: <code>{_mask(secret,8,6)}</code>\n"
+        "\n👤 <b>Ketua</b>\n"
+        f"• Nama: {leader.get('leader_name','-')}\n"
+        f"• NIK: {_mask(leader.get('leader_identity_no'))}\n"
+        f"• HP: {_mask(leader.get('leader_hp'))}\n"
+        f"• Lahir: {leader.get('leader_birthdate','-')}\n"
+        f"• Email: {leader.get('email','-')} | Country: {leader.get('country','-')}\n"
+        f"• Alamat: {leader.get('leader_address','-')}\n"
+    )
+
+    lines = [head, "\n👥 <b>Anggota</b> (" + str(total) + (f", filter='{filter_q}'" if filter_q else "") + ")\n"]
+    if not members:
+        lines.append("(kosong)")
+    else:
+        for i, m in enumerate(members, start=1):
+            nama = m.get("nama") or "-"
+            nik  = m.get("identity_no") or "-"
+            hp   = m.get("hp_member") or "-"
+            bday = m.get("birthdate") or "-"
+            lines.append(f"{i}. {nama} — NIK:{_mask(nik)} — HP:{_mask(hp)} — Lahir:{bday}")
+
+    # pecah jika kepanjangan
+    msg = "\n".join(lines)
+    def split_long_message(msg: str, limit: int = 3900) -> list[str]:
+        if len(msg) <= limit:
+            return [msg]
+        parts, cur = [], ""
+        for line in msg.splitlines():
+            add = (("\n" if cur else "") + line)
+            if len(cur) + len(add) > limit:
+                parts.append(cur); cur = line
+            else:
+                cur += add
+        if cur: parts.append(cur)
+        return parts
+
+    for part in split_long_message(msg):
+        await update.message.reply_text(part, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
 # -------- Global Error Handler ----------
 async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.exception("Update caused error", exc_info=context.error)
@@ -2269,6 +2662,9 @@ def main():
     app.add_handler(CommandHandler(["prov", "provinsi"], prov_lookup_cmd))
     app.add_handler(CommandHandler(["kab", "kabupaten"], kabupaten_cmd))
 
+    # Lookup booking code
+    # NEW: lookup booking detail
+    app.add_handler(CommandHandler("booking_detail", booking_detail_cmd))
 
     # BROMO
     app.add_handler(ConversationHandler(
