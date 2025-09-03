@@ -25,7 +25,6 @@ from datetime import datetime, timedelta
 import re
 from urllib.parse import urlparse, parse_qs
 
-
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,  # bisa diganti DEBUG kalau mau lebih detail
@@ -37,35 +36,34 @@ load_dotenv()
 
 # ========================= CONFIG =========================
 BASE = "https://bromotenggersemeru.id"
-SITE_PATH_BROMO   = "/booking/site/lembah-watangan"
-SITE_PATH_SEMERU  = "/booking/site/semeru"
-CAP_URL    = f"{BASE}/website/home/get_view"
+SITE_PATH_BROMO = "/booking/site/lembah-watangan"
+SITE_PATH_SEMERU = "/booking/site/semeru"
+CAP_URL = f"{BASE}/website/home/get_view"
 ACTION_URL = f"{BASE}/website/booking/action"
-COMBO_URL  = f"{BASE}/website/home/combo"
+COMBO_URL = f"{BASE}/website/home/combo"
 ASIA_JAKARTA = pytz.timezone("Asia/Jakarta")
 # === DataTables grid endpoints (untuk lookup detail by kode) ===
-GRID_MEMBER  = f"{BASE}/member/booking/grid"
+GRID_MEMBER = f"{BASE}/member/booking/grid"
 GRID_WEBSITE = f"{BASE}/website/booking/grid"
 
-
 # --- Bromo ---
-BROMO_SITE_ID   = "4"
+BROMO_SITE_ID = "4"
 BROMO_SECTOR_ID = "1"
 BROMO_SITE_LABEL = "Bromo"
 
 # --- Semeru ---
-SEMERU_SITE_ID   = "8"      # id_site untuk kapasitas
-SEMERU_SECTOR_ID = "3"      # sesuai dump HTML (penting!)
+SEMERU_SITE_ID = "8"  # id_site untuk kapasitas
+SEMERU_SECTOR_ID = "3"  # sesuai dump HTML (penting!)
 SEMERU_SITE_LABEL = "Semeru"
 
-STORAGE_FILE = "storage.json"   # { "<user_id>": {"ci_session": "...", "jobs": {...}} }
+STORAGE_FILE = "storage.json"  # { "<user_id>": {"ci_session": "...", "jobs": {...}} }
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bromo-semeru-bot")
 
 MONTHS_ID = {
-    "januari":"01","februari":"02","maret":"03","april":"04","mei":"05","juni":"06",
-    "juli":"07","agustus":"08","september":"09","oktober":"10","november":"11","desember":"12"
+    "januari": "01", "februari": "02", "maret": "03", "april": "04", "mei": "05", "juni": "06",
+    "juli": "07", "agustus": "08", "september": "09", "oktober": "10", "november": "11", "desember": "12"
 }
 # =================== PROVINCE LOOKUP ===================
 # Kode resmi sesuai <select> dari server
@@ -83,10 +81,12 @@ PROVINCE_CODES = {
     "SUMATERA BARAT": "13", "SUMATERA SELATAN": "16", "SUMATERA UTARA": "12",
 }
 
+
 def _norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", (s or "").lower())
 
-_CANON_NAMES = { _norm(k): k for k in PROVINCE_CODES.keys() }
+
+_CANON_NAMES = {_norm(k): k for k in PROVINCE_CODES.keys()}
 
 _PROV_SYNONYMS = {
     "diy": "DI YOGYAKARTA", "yogyakarta": "DI YOGYAKARTA", "jogja": "DI YOGYAKARTA",
@@ -106,6 +106,7 @@ _PROV_SYNONYMS = {
     "kepulauan riau": "KEPULAUAN RIAU", "kep bangka belitung": "KEPULAUAN BANGKA BELITUNG",
     "bangka belitung": "KEPULAUAN BANGKA BELITUNG", "papua barat": "PAPUA BARAT",
 }
+
 
 def province_lookup(q: str) -> tuple[str | None, str | None, list[str]]:
     """
@@ -154,20 +155,30 @@ def load_storage():
         with open(STORAGE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+
 def save_storage(data):
     with open(STORAGE_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
+
 storage = load_storage()
+
+
 def get_ci(uid: str) -> str:
     return storage.get(uid, {}).get("ci_session", "")
+
+
 def set_ci(uid: str, ci: str):
     storage.setdefault(uid, {})["ci_session"] = ci
     save_storage(storage)
+
+
 def get_jobs_store(uid: str) -> dict:
     storage.setdefault(uid, {})
     storage[uid].setdefault("jobs", {})
     return storage[uid]["jobs"]
+
 
 # =================== HELPERS ===================
 def parse_date_indo_to_iso(date_str: str) -> str:
@@ -175,17 +186,25 @@ def parse_date_indo_to_iso(date_str: str) -> str:
     if re.fullmatch(r"\d{4}-\d{2}-\d{2}", s):
         return s
     if re.fullmatch(r"\d{2}-\d{2}-\d{4}", s):
-        d, m, y = s.split("-"); return f"{y}-{m}-{d}"
+        d, m, y = s.split("-");
+        return f"{y}-{m}-{d}"
     if "," in s: s = s.split(",", 1)[1].strip()
     parts = s.split()
     if len(parts) == 3 and parts[1].lower() in MONTHS_ID:
-        day = parts[0].zfill(2); month = MONTHS_ID[parts[1].lower()]; year = parts[2]
+        day = parts[0].zfill(2);
+        month = MONTHS_ID[parts[1].lower()];
+        year = parts[2]
         return f"{year}-{month}-{day}"
     raise ValueError("Format tanggal tidak dikenali.")
 
+
 def year_month_from_iso(iso: str) -> str: return iso[:7]
+
+
 def extract_int(text: str) -> int:
-    m = re.findall(r"\d+", text); return int("".join(m)) if m else 0
+    m = re.findall(r"\d+", text);
+    return int("".join(m)) if m else 0
+
 
 def slugify(s: str, maxlen: int = 18) -> str:
     s = s.strip().lower()
@@ -193,6 +212,7 @@ def slugify(s: str, maxlen: int = 18) -> str:
     if len(s) > maxlen:
         s = s[:maxlen].rstrip("-")
     return s or "ketua"
+
 
 def build_referer_url(site_path: str, iso_date: str) -> str:
     return f"{BASE}{site_path}?date_depart={iso_date}"
@@ -228,13 +248,17 @@ def get_tokens_from_cnt_page(html: str, debug_name: str = "debug.html"):
                  len(secret) if secret else 0, form_hash)
 
     return secret, form_hash, booking
+
+
 def find_quota_for_date(rows, iso_date: str):
     for tr in rows:
         tds = tr.find_all("td")
         if len(tds) < 2: continue
         tanggal_text = " ".join(tds[0].stripped_strings)
-        try: iso_from_cell = parse_date_indo_to_iso(tanggal_text)
-        except: continue
+        try:
+            iso_from_cell = parse_date_indo_to_iso(tanggal_text)
+        except:
+            continue
         if iso_from_cell == iso_date:
             quota_text = " ".join(tds[1].stripped_strings)
             quota = extract_int(quota_text)
@@ -242,9 +266,11 @@ def find_quota_for_date(rows, iso_date: str):
             return {"tanggal_cell": tanggal_text, "quota": quota, "status": status}
     return None
 
+
 # Tambahkan import ini di bagian import atas file (sekali saja)
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+
 
 def _requests_session_with_retries(total: int = 3, backoff: float = 0.5) -> requests.Session:
     """
@@ -268,6 +294,7 @@ def _requests_session_with_retries(total: int = 3, backoff: float = 0.5) -> requ
     s.mount("https://", adapter)
     s.mount("http://", adapter)
     return s
+
 
 def check_capacity(iso_date: str, site: str) -> dict | None:
     """
@@ -327,7 +354,8 @@ def make_session_with_cookies(ci_session: str, extra_cookies: dict | None = None
         if extra_cookies.get("_ga"):
             sess.cookies.set("_ga", extra_cookies["_ga"], domain=".bromotenggersemeru.id", path="/")
         if extra_cookies.get("_ga_TMVP85FKW9"):
-            sess.cookies.set("_ga_TMVP85FKW9", extra_cookies["_ga_TMVP85FKW9"], domain=".bromotenggersemeru.id", path="/")
+            sess.cookies.set("_ga_TMVP85FKW9", extra_cookies["_ga_TMVP85FKW9"], domain=".bromotenggersemeru.id",
+                             path="/")
         if extra_cookies.get("ci_session"):
             sess.cookies.set("ci_session", extra_cookies["ci_session"], domain="bromotenggersemeru.id", path="/")
     # fallback global
@@ -335,7 +363,9 @@ def make_session_with_cookies(ci_session: str, extra_cookies: dict | None = None
         sess.cookies.set("ci_session", ci_session, domain="bromotenggersemeru.id", path="/")
     return sess
 
-def fetch_districts_by_province(id_province: str, ci_session: str = "", extra_cookies: dict | None = None) -> list[tuple[str, str]]:
+
+def fetch_districts_by_province(id_province: str, ci_session: str = "", extra_cookies: dict | None = None) -> list[
+    tuple[str, str]]:
     """
     Return list [(kode_kabkota, NAMA_KAB/KOTA), ...]
     Endpoint 'combo' terkadang minta cookie + header AJAX + referer yang valid.
@@ -375,13 +405,13 @@ def fetch_districts_by_province(id_province: str, ci_session: str = "", extra_co
 
     # --- Kandidat payload (urutkan yg paling mungkin dulu)
     candidates = [
-        {"action": "district",  "id_province": str(id_province)},  # sesuai network log terakhirmu
-        {"action": "district",  "id":           str(id_province)},
+        {"action": "district", "id_province": str(id_province)},  # sesuai network log terakhirmu
+        {"action": "district", "id": str(id_province)},
         {"action": "kabupaten", "id_province": str(id_province)},  # fallback lama
-        {"action": "kabupaten", "id":           str(id_province)},
-        {"id_province": str(id_province)},                          # very-lax fallback
-        {"id":           str(id_province)},
-        {"province":     str(id_province)},
+        {"action": "kabupaten", "id": str(id_province)},
+        {"id_province": str(id_province)},  # very-lax fallback
+        {"id": str(id_province)},
+        {"province": str(id_province)},
     ]
 
     # --- Helper parse (HTML <option> atau JSON {options:[{value,text}]})
@@ -446,12 +476,14 @@ def fetch_districts_by_province(id_province: str, ci_session: str = "", extra_co
         pass
     return []
 
-def format_districts_message(prov_code: str, prov_name: str, pairs: list[tuple[str,str]]) -> str:
+
+def format_districts_message(prov_code: str, prov_name: str, pairs: list[tuple[str, str]]) -> str:
     header = f"📍 Daftar Kabupaten/Kota {prov_name.title()} ({prov_code})"
     lines = [header, ""]
     for code, name in pairs:
         lines.append(f"{code} — {name}")
     return "\n".join(lines)
+
 
 def split_long_message(msg: str, limit: int = 3900) -> list[str]:
     if len(msg) <= limit:
@@ -468,8 +500,10 @@ def split_long_message(msg: str, limit: int = 3900) -> list[str]:
         parts.append(cur)
     return parts
 
+
 # ---------- Lookup by Kode Booking (Leader + Anggota via secret) ----------
 from urllib.parse import unquote
+
 
 def _grid_headers(ci_session: str) -> dict:
     return {
@@ -482,6 +516,7 @@ def _grid_headers(ci_session: str) -> dict:
         "cookie": f"ci_session={ci_session}",
     }
 
+
 def get_booking_by_code_api(booking_code: str, ci_session: str) -> dict:
     """
     Cari 1 row booking di /member/booking/grid pakai server-side search[value]=<kode>.
@@ -489,9 +524,11 @@ def get_booking_by_code_api(booking_code: str, ci_session: str) -> dict:
     """
     payload = {
         "draw": "1",
-        "columns[0][data]": "id", "columns[0][name]": "", "columns[0][searchable]": "true", "columns[0][orderable]": "true",
+        "columns[0][data]": "id", "columns[0][name]": "", "columns[0][searchable]": "true",
+        "columns[0][orderable]": "true",
         "columns[0][search][value]": "", "columns[0][search][regex]": "false",
-        "columns[1][data]": "code", "columns[1][name]": "", "columns[1][searchable]": "true", "columns[1][orderable]": "true",
+        "columns[1][data]": "code", "columns[1][name]": "", "columns[1][searchable]": "true",
+        "columns[1][orderable]": "true",
         "columns[1][search][value]": "", "columns[1][search][regex]": "false",
         "order[0][column]": "0", "order[0][dir]": "DESC",
         "start": "0", "length": "10",
@@ -505,9 +542,10 @@ def get_booking_by_code_api(booking_code: str, ci_session: str) -> dict:
     if not rows:
         raise RuntimeError(f"Booking {booking_code} tidak ditemukan atau tidak terlihat oleh akunmu.")
     for rr in rows:
-        if str(rr.get("code","")).strip() == booking_code:
+        if str(rr.get("code", "")).strip() == booking_code:
             return rr
     return rows[0]  # fallback kalau server mengembalikan partial
+
 
 def get_leader_from_row(row: dict) -> dict:
     return {
@@ -527,21 +565,22 @@ def get_leader_from_row(row: dict) -> dict:
         "secret": row.get("secret"),
     }
 
-def _build_website_grid_payload(secret_raw: str, start=0, length=100, search_value: str=""):
+
+def _build_website_grid_payload(secret_raw: str, start=0, length=100, search_value: str = ""):
     sec_val = unquote(secret_raw)
     columns = [
-        ("nama",        True, True,  ""),
-        ("country",     True, True,  ""),
-        ("hp_member",   True, True,  ""),
-        ("birthdate",   True, True,  ""),
-        ("identity_no", True, True,  ""),
-        ("",            True, False, ""),
+        ("nama", True, True, ""),
+        ("country", True, True, ""),
+        ("hp_member", True, True, ""),
+        ("birthdate", True, True, ""),
+        ("identity_no", True, True, ""),
+        ("", True, False, ""),
     ]
     data = {
         "secret": sec_val,
         "draw": "2",
         "order[0][column]": "0",
-        "order[0][dir]"   : "asc",
+        "order[0][dir]": "asc",
         "start": str(start),
         "length": str(length),
         "search[value]": search_value or "",
@@ -551,12 +590,14 @@ def _build_website_grid_payload(secret_raw: str, start=0, length=100, search_val
         data[f"columns[{idx}][data]"] = col
         data[f"columns[{idx}][name]"] = ""
         data[f"columns[{idx}][searchable]"] = "true" if searchable else "false"
-        data[f"columns[{idx}][orderable]"]  = "true" if orderable  else "false"
+        data[f"columns[{idx}][orderable]"] = "true" if orderable else "false"
         data[f"columns[{idx}][search][value]"] = search_val
         data[f"columns[{idx}][search][regex]"] = "false"
     return data
 
-def get_members_by_secret(secret: str, ci_session: str, page_size: int = 200, search_value: str = "") -> tuple[list, int]:
+
+def get_members_by_secret(secret: str, ci_session: str, page_size: int = 200, search_value: str = "") -> tuple[
+    list, int]:
     """
     Ambil seluruh anggota dari /website/booking/grid menggunakan secret yang didapat dari grid member.
     Bisa difilter (search_value) dan handle paging otomatis.
@@ -587,9 +628,13 @@ def get_members_by_secret(secret: str, ci_session: str, page_size: int = 200, se
 def add_or_update_members_bromo(sess: requests.Session, secret: str, male: int, female: int, id_country: str = "99"):
     if male < 0 or female < 0: return
     if male == 0 and female == 0: return
-    payload = {"action": "anggota_update", "secret": secret, "id": "", "male": str(male), "female": str(female), "id_country": id_country}
-    try: _ = sess.post(ACTION_URL, data=payload, timeout=30)
-    except Exception as e: log.warning("anggota_update (Bromo) error: %s", e)
+    payload = {"action": "anggota_update", "secret": secret, "id": "", "male": str(male), "female": str(female),
+               "id_country": id_country}
+    try:
+        _ = sess.post(ACTION_URL, data=payload, timeout=30)
+    except Exception as e:
+        log.warning("anggota_update (Bromo) error: %s", e)
+
 
 def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict,
                           job_cookies: dict | None = None) -> tuple[bool, str, float, dict | None]:
@@ -598,26 +643,27 @@ def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict,
     # ✅ JIT: cek kuota saat eksekusi
     cap = check_capacity(iso_date, "bromo")
     if not cap:
-        return False, f"Kuota: tanggal {iso_date} tidak ditemukan.", time.perf_counter()-t0, None
+        return False, f"Kuota: tanggal {iso_date} tidak ditemukan.", time.perf_counter() - t0, None
     if cap["quota"] <= 0:
-        return False, f"Kuota {cap['tanggal_cell']}: {cap['quota']} (Tidak tersedia).", time.perf_counter()-t0, None
+        return False, f"Kuota {cap['tanggal_cell']}: {cap['quota']} (Tidak tersedia).", time.perf_counter() - t0, None
 
     sess = make_session_with_cookies(ci_session, job_cookies)
     referer = build_referer_url(SITE_PATH_BROMO, iso_date)
     r = sess.get(referer, timeout=30)
     if r.status_code != 200:
-        return False, f"Gagal GET booking page: {r.status_code}", time.perf_counter()-t0, None
+        return False, f"Gagal GET booking page: {r.status_code}", time.perf_counter() - t0, None
     try:
         secret, form_hash, _ = get_tokens_from_cnt_page(r.text, debug_name="debug_bromo.html")
     except Exception as e:
-        return False, f"Gagal ekstrak token: {e}", time.perf_counter()-t0, None
+        return False, f"Gagal ekstrak token: {e}", time.perf_counter() - t0, None
 
     sess.headers.update({"X-Requested-With": "XMLHttpRequest", "Origin": BASE, "Referer": referer})
     try:
-        _ = sess.post(ACTION_URL, data={"action":"update_hash","secret":secret,"form_hash":form_hash}, timeout=30)
-        _ = sess.post(ACTION_URL, data={"action":"validate_booking","secret":secret,"form_hash":form_hash}, timeout=30)
+        _ = sess.post(ACTION_URL, data={"action": "update_hash", "secret": secret, "form_hash": form_hash}, timeout=30)
+        _ = sess.post(ACTION_URL, data={"action": "validate_booking", "secret": secret, "form_hash": form_hash},
+                      timeout=30)
     except Exception as e:
-        return False, f"Gagal update/validate hash: {e}", time.perf_counter()-t0, None
+        return False, f"Gagal update/validate hash: {e}", time.perf_counter() - t0, None
 
     male = int(profile.get("male", "0") or 0)
     female = int(profile.get("female", "0") or 0)
@@ -651,7 +697,7 @@ def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict,
     try:
         resp = sess.post(ACTION_URL, data=payload, timeout=60)
     except Exception as e:
-        return False, f"Gagal POST do_booking: {e}", time.perf_counter()-t0, None
+        return False, f"Gagal POST do_booking: {e}", time.perf_counter() - t0, None
 
     elapsed = time.perf_counter() - t0
     ct = (resp.headers.get("Content-Type") or "").lower()
@@ -662,9 +708,10 @@ def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict,
             return False, f"Respon tidak bisa dibaca JSON: {resp.text[:400]}", elapsed, None
         if data.get("status") is True:
             link = data.get("booking_link") or data.get("link_redirect") or "(tidak ada link)"
-            return True, f"Booking BERHASIL.\nLink: {link}\nServer message: {data.get('message','-')}", elapsed, data
+            return True, f"Booking BERHASIL.\nLink: {link}\nServer message: {data.get('message', '-')}", elapsed, data
         return False, f"Booking GAGAL: {data.get('message') or data}", elapsed, data
     return False, f"Respon non-JSON: {resp.text[:400]}", elapsed, None
+
 
 # =================== SEMERU FLOWS (9 anggota) ===================
 FORM_PROMPT_SEMERU = (
@@ -699,6 +746,7 @@ FORM_PROMPT_SEMERU = (
     "Ingatkan (menit)  :  (misal: 15 → bot remind sebelum eksekusi)\n"
 )
 
+
 def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, list]:
     """
     Return: (leader_profile, members_list(<=9), cookies_dict, reminder_minutes, errors)
@@ -709,7 +757,7 @@ def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, li
         "birthdate": "", "address": "", "id_province": "", "id_district": "",
         "pendamping": "0", "organisasi": "", "leader_setuju": "0", "bank": "qris",
     }
-    cookies = {"_ga":"", "_ga_TMVP85FKW9":"", "ci_session":""}
+    cookies = {"_ga": "", "_ga_TMVP85FKW9": "", "ci_session": ""}
     reminder_minutes = None
     errors = []
     members = []
@@ -727,24 +775,24 @@ def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, li
                 return kv[key]
         return ""
 
-    leader["name"]         = get_ci("Nama")
-    leader["identity_no"]  = get_ci("No KTP")
-    leader["hp"]           = get_ci("No HP")
-    leader["birthdate"]    = get_ci("Tanggal Lahir")
-    leader["address"]      = get_ci("Alamat")
-    leader["id_province"]  = get_ci("ID Provinsi")
-    leader["id_district"]  = get_ci("ID Kabupaten/Kota")
-    leader["pendamping"]   = get_ci("Pendamping (0/1)") or "0"
-    leader["organisasi"]   = get_ci("Organisasi") or ""
-    leader["leader_setuju"]= get_ci("Leader Setuju (0/1)") or "0"
-    leader_bank_raw        = (get_ci("Metode Bayar") or "qris").strip().lower()
+    leader["name"] = get_ci("Nama")
+    leader["identity_no"] = get_ci("No KTP")
+    leader["hp"] = get_ci("No HP")
+    leader["birthdate"] = get_ci("Tanggal Lahir")
+    leader["address"] = get_ci("Alamat")
+    leader["id_province"] = get_ci("ID Provinsi")
+    leader["id_district"] = get_ci("ID Kabupaten/Kota")
+    leader["pendamping"] = get_ci("Pendamping (0/1)") or "0"
+    leader["organisasi"] = get_ci("Organisasi") or ""
+    leader["leader_setuju"] = get_ci("Leader Setuju (0/1)") or "0"
+    leader_bank_raw = (get_ci("Metode Bayar") or "qris").strip().lower()
     valid_banks = {"qris": "qris", "va-mandiri": "VA-Mandiri", "va-bni": "VA-BNI"}
-    leader["bank"]         = valid_banks.get(leader_bank_raw, "qris")
+    leader["bank"] = valid_banks.get(leader_bank_raw, "qris")
 
     # cookies + reminder
-    cookies["_ga"]             = get_ci("_ga")
-    cookies["_ga_TMVP85FKW9"]  = get_ci("_ga_TMVP85FKW9") or get_ci("_ga_tmpvp85fkw9") or get_ci("_ga_tmvp85fkw9")
-    cookies["ci_session"]      = get_ci("ci_session")
+    cookies["_ga"] = get_ci("_ga")
+    cookies["_ga_TMVP85FKW9"] = get_ci("_ga_TMVP85FKW9") or get_ci("_ga_tmpvp85fkw9") or get_ci("_ga_tmvp85fkw9")
+    cookies["ci_session"] = get_ci("ci_session")
     rm = get_ci("Ingatkan (menit)")
     if rm:
         if not rm.isdigit() or not (0 <= int(rm) <= 120):
@@ -758,9 +806,9 @@ def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, li
     if not leader["hp"]: errors.append("No HP (ketua) wajib.")
     if leader["birthdate"] and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", leader["birthdate"]):
         errors.append("Tanggal Lahir (ketua) harus YYYY-MM-DD")
-    if leader["pendamping"] not in {"0","1"}:
+    if leader["pendamping"] not in {"0", "1"}:
         errors.append("Pendamping harus 0/1.")
-    if leader["leader_setuju"] not in {"0","1"}:
+    if leader["leader_setuju"] not in {"0", "1"}:
         errors.append("Leader Setuju harus 0/1.")
 
     # members (Anggota 1..9)
@@ -784,7 +832,7 @@ def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, li
         }
         if m["birthdate"] and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", m["birthdate"]):
             errors.append(f"Anggota {i}: Tgl Lahir harus YYYY-MM-DD.")
-        if m["id_gender"] not in {"1","2"}:
+        if m["id_gender"] not in {"1", "2"}:
             errors.append(f"Anggota {i}: Gender harus 1/2.")
         members.append(m)
 
@@ -798,6 +846,7 @@ def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, li
 
 log = logging.getLogger("semeru")
 
+
 def _apply_ajax_headers(sess: requests.Session, referer_url: str):
     """Set header AJAX yang dibutuhkan endpoint /website/booking/action."""
     sess.headers.update({
@@ -807,6 +856,7 @@ def _apply_ajax_headers(sess: requests.Session, referer_url: str):
         "Accept": "*/*",
         "Connection": "keep-alive",
     })
+
 
 def _post_json(sess: requests.Session, url: str, data: dict, timeout: int = 30) -> tuple[bool, dict | None, str]:
     """
@@ -824,6 +874,7 @@ def _post_json(sess: requests.Session, url: str, data: dict, timeout: int = 30) 
             return False, None, txt
     return False, None, txt
 
+
 def _member_update_once(sess: requests.Session, secret: str, form_hash: str, m: dict) -> tuple[bool, str]:
     """Kirim 1 anggota. Sukses = server mengembalikan JSON dengan status=True."""
     payload = {
@@ -831,17 +882,17 @@ def _member_update_once(sess: requests.Session, secret: str, form_hash: str, m: 
         "id": "",
         "secret": secret,
         "form_hash": form_hash or "",
-        "nama":            m.get("nama", ""),
-        "birthdate":       m.get("birthdate", ""),
-        "anggota_setuju":  m.get("anggota_setuju", "1"),
-        "id_gender":       m.get("id_gender", "1"),
-        "alamat":          m.get("alamat", ""),
-        "id_identity":     m.get("id_identity", "1"),
-        "identity_no":     m.get("identity_no", ""),
-        "hp_member":       m.get("hp_member", ""),
-        "hp_keluarga":     m.get("hp_keluarga", ""),
-        "id_job":          m.get("id_job", "6"),
-        "id_country":      m.get("id_country", "99"),
+        "nama": m.get("nama", ""),
+        "birthdate": m.get("birthdate", ""),
+        "anggota_setuju": m.get("anggota_setuju", "1"),
+        "id_gender": m.get("id_gender", "1"),
+        "alamat": m.get("alamat", ""),
+        "id_identity": m.get("id_identity", "1"),
+        "identity_no": m.get("identity_no", ""),
+        "hp_member": m.get("hp_member", ""),
+        "hp_keluarga": m.get("hp_keluarga", ""),
+        "id_job": m.get("id_job", "6"),
+        "id_country": m.get("id_country", "99"),
     }
     is_json, j, raw = _post_json(sess, ACTION_URL, payload, timeout=30)
     if is_json and isinstance(j, dict):
@@ -850,7 +901,9 @@ def _member_update_once(sess: requests.Session, secret: str, form_hash: str, m: 
         return ok, str(msg)
     return False, (raw[:160] + "…")
 
-def _add_members_batch(sess: requests.Session, secret: str, form_hash: str, members: list[dict]) -> tuple[int, list[str]]:
+
+def _add_members_batch(sess: requests.Session, secret: str, form_hash: str, members: list[dict]) -> tuple[
+    int, list[str]]:
     """Tambah hingga 9 anggota. Return (jumlah_sukses, catatan_per_anggota)."""
     added = 0
     notes: list[str] = []
@@ -871,6 +924,7 @@ def _add_members_batch(sess: requests.Session, secret: str, form_hash: str, memb
                 break
     return added, notes
 
+
 def _prime_tokens_semeru(sess: requests.Session, booking_iso: str) -> tuple[str, str, dict]:
     """
     Ambil ulang secret & form_hash dari halaman Semeru.
@@ -884,13 +938,18 @@ def _prime_tokens_semeru(sess: requests.Session, booking_iso: str) -> tuple[str,
     if not secret:
         raise RuntimeError("Token 'secret' kosong saat re-prime.")
     return secret, (form_hash or ""), booking_obj
+
+
 from http.cookiejar import Cookie
 
-def has_cookie(jar: requests.cookies.RequestsCookieJar, name: str, domain: str | None = None, path: str | None = None) -> bool:
+
+def has_cookie(jar: requests.cookies.RequestsCookieJar, name: str, domain: str | None = None,
+               path: str | None = None) -> bool:
     for c in jar:
         if c.name == name and (domain is None or c.domain == domain) and (path is None or c.path == path):
             return True
     return False
+
 
 def set_unique_cookie(jar: requests.cookies.RequestsCookieJar, name: str, value: str, domain: str, path: str = "/"):
     # hapus semua cookie existing dengan nama tsb agar tak konflik
@@ -905,8 +964,10 @@ def set_unique_cookie(jar: requests.cookies.RequestsCookieJar, name: str, value:
             pass
     jar.set(name, value, domain=domain, path=path)
 
+
 import json, re
 from bs4 import BeautifulSoup
+
 
 def extract_tokens_from_html(html: str, debug_name: str = "debug_semeru.html"):
     """
@@ -961,6 +1022,7 @@ def extract_tokens_from_html(html: str, debug_name: str = "debug_semeru.html"):
                     cleaned = re.sub(r",\s*}", "}", chunk)
                     try:
                         data = json.loads(cleaned)
+
                         # fleksibel: kadang langsung {"booking":{...}}, kadang {"some":{"booking":{...}}}
                         def deep_get_booking(obj):
                             if isinstance(obj, dict):
@@ -971,6 +1033,7 @@ def extract_tokens_from_html(html: str, debug_name: str = "debug_semeru.html"):
                                     if res is not None:
                                         return res
                             return None
+
                         booking = deep_get_booking(data) or {}
                         secret = booking.get("secret")
                         form_hash = booking.get("form_hash", "")
@@ -986,6 +1049,8 @@ def extract_tokens_from_html(html: str, debug_name: str = "debug_semeru.html"):
     except Exception:
         pass
     raise RuntimeError(f"Elemen/JSON booking tidak ditemukan. HTML disimpan ke {debug_name}")
+
+
 def _prepare_sem_sess(ci_session: str, job_cookies: dict | None) -> requests.Session:
     sess = requests.Session()
     ua = ('Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) '
@@ -1011,6 +1076,7 @@ def _prepare_sem_sess(ci_session: str, job_cookies: dict | None) -> requests.Ses
 
     return sess
 
+
 def _preflight_sem(sess: requests.Session):
     # 1) homepage → kadang set beberapa cookie/cache
     try:
@@ -1025,6 +1091,8 @@ def _preflight_sem(sess: requests.Session):
         r1.raise_for_status()
     except Exception as e:
         log.debug("Preflight step 2 gagal (peraturan): %s", e)
+
+
 # === SEMERU: list & delete existing members ===
 def semeru_list_members(sess: requests.Session, booking_iso: str) -> list[dict]:
     """
@@ -1038,7 +1106,7 @@ def semeru_list_members(sess: requests.Session, booking_iso: str) -> list[dict]:
             "draw": "1",
             "start": "0",
             "length": "200",
-            "date_depart": booking_iso,   # sering dipakai sebagai filter server-side
+            "date_depart": booking_iso,  # sering dipakai sebagai filter server-side
         }
         r = sess.post(f"{BASE}/website/booking/grid", data=payload, timeout=30,
                       headers={"X-Requested-With": "XMLHttpRequest"})
@@ -1049,17 +1117,18 @@ def semeru_list_members(sess: requests.Session, booking_iso: str) -> list[dict]:
         out = []
         for row in data:
             out.append({
-                "id":            str(row.get("id") or ""),
-                "identity_no":   str(row.get("identity_no") or ""),
-                "nama":          str(row.get("nama") or ""),
-                "secret":        str(row.get("secret") or ""),
-                "date_depart":   str(row.get("date_depart") or ""),
-                "date_arrival":  str(row.get("date_arrival") or ""),
+                "id": str(row.get("id") or ""),
+                "identity_no": str(row.get("identity_no") or ""),
+                "nama": str(row.get("nama") or ""),
+                "secret": str(row.get("secret") or ""),
+                "date_depart": str(row.get("date_depart") or ""),
+                "date_arrival": str(row.get("date_arrival") or ""),
             })
         return out
     except Exception as e:
         log.warning("semeru_list_members error: %s", e)
         return []
+
 
 def semeru_member_delete(sess: requests.Session, secret: str, member_id: str) -> tuple[bool, str]:
     """
@@ -1068,12 +1137,13 @@ def semeru_member_delete(sess: requests.Session, secret: str, member_id: str) ->
     payload = {
         "action": "member_delete",
         "secret": secret,
-        "id":     member_id,
+        "id": member_id,
     }
     is_json, j, raw = _post_json(sess, ACTION_URL, payload, timeout=30)
     if is_json and isinstance(j, dict):
         return bool(j.get("status", False)), str(j.get("message") or "-")
     return False, (raw[:160] + "…")
+
 
 def do_booking_flow_semeru(
     ci_session: str,
@@ -1235,18 +1305,14 @@ def do_booking_flow_semeru(
     # === Bersihkan anggota yang sudah terdaftar di secret/tanggal ini ===
     try:
         existing = semeru_list_members(sess, booking_iso)
-        # Filter yang match tanggal (server kadang kembalikan beberapa secret/tgl)
         to_del = [row for row in existing if row.get("date_depart") == booking_iso]
         if to_del:
             logger.info("Ditemukan %d anggota existing → hapus dulu", len(to_del))
-            # pilih secret yg sesuai; gunakan 'secret' yg kita baru prime kalau cocok,
-            # kalau tidak ada, pakai secret per-row (server izinkan).
             for row in to_del:
                 row_secret = row.get("secret") or secret
                 okdel, msgdel = semeru_member_delete(sess, row_secret, row["id"])
                 logger.info("Del member id=%s (%s) → %s (%s)", row["id"], row.get("nama"), "OK" if okdel else "FAIL", msgdel)
                 time.sleep(0.15)
-            # validasi ulang
             try:
                 sess.post(ACTION_URL, data={"action":"validate_booking","secret":secret,"form_hash":form_hash or ""}, timeout=20)
             except Exception:
@@ -1266,7 +1332,6 @@ def do_booking_flow_semeru(
     # ——— Jika langsung "Maksimal 9 anggota" → re-prime secret sekali
     if (not ok_first) and ("maksimal 9" in msg_first.lower()):
         try:
-            # fresh session + secret (minim cache)
             sess = _new_session()
             secret, form_hash = _prime_secret(sess)
             ok_first, msg_first = _add_member(sess, secret, form_hash, 1, safe_members[0])
@@ -1290,23 +1355,18 @@ def do_booking_flow_semeru(
                 if "maksimal 9" in msg_m.lower():
                     break
             time.sleep(0.2)
-        # commit jumlah
         try:
             sess.post(ACTION_URL, data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""}, timeout=20)
         except Exception:
             pass
         ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
-
     else:
         # Jalur B: do_booking dulu (ketua + Anggota 1), baru tambah sisa
         ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
         if not ok_do and "minimal 2" in msg_do.lower():
-            # server menuntut minimal 2; coba paksakan tambah 1 lagi & retry sekali
             ok_retry, msg_retry = _add_member(sess, secret, form_hash, 1, safe_members[0])
             logger.warning("Fallback add first member → %s (%s)", "OK" if ok_retry else "FAIL", msg_retry)
             ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
-
-        # setelah booking sukses, baru tambah sisa anggota
         if ok_do:
             for i, m in enumerate(safe_members[1:9], start=2):
                 ok_m, msg_m = _add_member(sess, secret, form_hash, i, m)
@@ -1323,12 +1383,10 @@ def do_booking_flow_semeru(
             except Exception:
                 pass
 
-    # … setelah baris:
+    # ——— Error handling khusus duplikat identitas
     if not ok_do:
-        # Tambahkan blok tangani duplikat identitas:
         if "nomor identitas ganda" in msg_do.lower():
-            logger.warning("Deteksi duplikat identitas → lakukan cleanup & retry sekali")
-            # cleanup
+            logger.warning("Deteksi duplikat identitas → cleanup & retry sekali")
             try:
                 existing = semeru_list_members(sess, booking_iso)
                 for row in existing:
@@ -1336,74 +1394,104 @@ def do_booking_flow_semeru(
                         row_secret = row.get("secret") or secret
                         semeru_member_delete(sess, row_secret, row["id"])
                         time.sleep(0.1)
-                sess.post(ACTION_URL,
-                          data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""},
-                          timeout=20)
+                sess.post(ACTION_URL, data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""}, timeout=20)
             except Exception as e:
                 logger.warning("Cleanup on duplicate fail: %s", e)
-            # retry booking sekali
             ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
 
         if not ok_do:
-            return False, f"Booking Semeru GAGAL {secret[:12]}...: {msg_do}", time.perf_counter() - t0, (
-                        data_do or None)
+            return False, f"Booking Semeru GAGAL {secret[:12]}...: {msg_do}", time.perf_counter() - t0, (data_do or None)
 
-        # ——— SUKSES → susun pesan dengan KODE BOOKING
-        elapsed = time.perf_counter() - t0
-        link = (data_do or {}).get("booking_link") or (data_do or {}).get("link_redirect") or "-"
+    # ——— SUKSES → susun pesan dengan KODE BOOKING
+    elapsed = time.perf_counter() - t0
+    link = (data_do or {}).get("booking_link") or (data_do or {}).get("link_redirect") or "-"
 
-        # coba tebak kode booking dari JSON / link
-        def _guess_booking_code(data_obj: dict | None, link_text: str) -> str | None:
-            # 1) field langsung
-            for k in ("code", "booking_code", "bookingCode"):
-                v = (data_obj or {}).get(k)
-                if isinstance(v, str) and "-" in v:
-                    return v.strip()
-            # 2) nested obj
-            for node in ("booking", "data", "result"):
-                sub = (data_obj or {}).get(node)
-                if isinstance(sub, dict):
-                    for k in ("code", "booking_code"):
-                        v = sub.get(k)
-                        if isinstance(v, str) and "-" in v:
-                            return v.strip()
-            # 3) dari link: ?code=... atau segmen path
-            if link_text and isinstance(link_text, str):
-                m = re.search(r"[?&]code=([A-Z0-9\-]+)", link_text)
-                if m:
-                    return m.group(1)
-                m = re.search(r"([A-Z]{2,}-[0-9\-]{6,})", link_text)
-                if m:
-                    return m.group(1)
-                parts = [p for p in link_text.split("/") if p]
-                for p in reversed(parts):
-                    if re.match(r"^[A-Z]{2,}-[0-9\-]{6,}$", p):
-                        return p
-            return None
+    # coba tebak kode booking dari JSON / link
+    def _guess_booking_code(data_obj: dict | None, link_text: str) -> str | None:
+        # 1) field langsung
+        for k in ("code", "booking_code", "bookingCode"):
+            v = (data_obj or {}).get(k)
+            if isinstance(v, str) and "-" in v:
+                return v.strip()
+        # 2) nested obj
+        for node in ("booking", "data", "result"):
+            sub = (data_obj or {}).get(node)
+            if isinstance(sub, dict):
+                for k in ("code", "booking_code"):
+                    v = sub.get(k)
+                    if isinstance(v, str) and "-" in v:
+                        return v.strip()
+        # 3) dari link: ?code=... atau segmen path
+        if link_text and isinstance(link_text, str):
+            m = re.search(r"[?&]code=([A-Z0-9\-]+)", link_text)
+            if m:
+                return m.group(1)
+            m = re.search(r"([A-Z]{2,}-[0-9\-]{6,})", link_text)
+            if m:
+                return m.group(1)
+            parts = [p for p in link_text.split("/") if p]
+            for p in reversed(parts):
+                if re.match(r"^[A-Z]{2,}-[0-9\-]{6,}$", p):
+                    return p
+        return None
 
-        booking_code = _guess_booking_code(data_do, link)
+    booking_code = _guess_booking_code(data_do, link)
 
-        extra_note = ""
-        if fail_msgs:
-            extra_note = "\nCatatan anggota gagal:\n- " + "\n- ".join(fail_msgs[:5])
-            if len(fail_msgs) > 5:
-                extra_note += f"\n- (+{len(fail_msgs) - 5} error lainnya)"
+    extra_note = ""
+    if fail_msgs:
+        extra_note = "\nCatatan anggota gagal:\n- " + "\n- ".join(fail_msgs[:5])
+        if len(fail_msgs) > 5:
+            extra_note += f"\n- (+{len(fail_msgs)-5} error lainnya)"
 
-        # TAMPILKAN kode booking + shortcut command detail
-        # ganti '/detail_booking' jika command-mu bernama lain (mis. '/booking_detail')
-        cmd_hint = f"\nDetail cepat: /detail_booking {booking_code}" if booking_code else ""
-        msg = (
-            "✅ Booking Semeru BERHASIL.\n"
-            f"Kode Booking: {booking_code or '-'}\n"
-            f"Link: {link}\n"
-            f"Anggota berhasil ditambahkan: {added} (di luar ketua)\n"
-            f"Server: {(data_do or {}).get('message', '-')}"
-            f"{cmd_hint}"
-            f"{extra_note}"
-        )
+    # TAMPILKAN kode booking + shortcut command detail
+    # ganti '/detail_booking' jika command-mu bernama lain (mis. '/booking_detail')
+    cmd_hint = f"\nDetail cepat: <code>/detail_booking {booking_code}</code>" if booking_code else ""
+    msg = (
+        "✅ Booking Semeru BERHASIL.\n"
+        f"Kode Booking: <code>{booking_code or '-'}</code>\n"
+        f"Link: {link}\n"
+        f"Anggota berhasil ditambahkan: {added} (di luar ketua)\n"
+        f"Server: {(data_do or {}).get('message','-')}"
+        f"{cmd_hint}"
+        f"{extra_note}"
+    )
 
     return True, msg, elapsed, data_do
 
+async def quota_semeru_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    /quota_semeru <YYYY-MM-DD>
+    Cek kuota pendakian semeru pada tanggal tsb.
+    """
+    if not context.args:
+        await update.message.reply_text("Format: /quota_semeru <YYYY-MM-DD>")
+        return
+
+    date_arg = context.args[0].strip()
+    try:
+        # normalize ke ISO date
+        iso_date = datetime.fromisoformat(date_arg).date().isoformat()
+    except Exception:
+        await update.message.reply_text("Tanggal tidak valid. Format: YYYY-MM-DD, mis. /quota_semeru 2025-09-30")
+        return
+
+    try:
+        cap = check_capacity(iso_date, "semeru")
+    except Exception as e:
+        await update.message.reply_text(f"Gagal cek kuota: {e}")
+        return
+
+    if not cap:
+        await update.message.reply_text(f"Tanggal {iso_date} tidak ditemukan di server.")
+        return
+
+    quota = cap.get("quota", "-")
+    tanggal_label = cap.get("tanggal_cell", iso_date)
+    msg = (
+        f"📅 Kuota Semeru {tanggal_label}\n"
+        f"🎟️ Tersisa: {quota}"
+    )
+    await update.message.reply_text(msg)
 # =================== COMMON FORM PARSER (Bromo) ===================
 FORM_KEYS_BROMO = {
     "nama": "name",
@@ -1452,6 +1540,7 @@ FORM_PROMPT_BROMO = (
     "- Field opsional boleh kosong."
 )
 
+
 def parse_form_block_bromo(text: str) -> tuple[dict, dict, int | None, list]:
     profile = {
         "id_country": "99", "id_gender": "1", "id_identity": "1",
@@ -1459,7 +1548,7 @@ def parse_form_block_bromo(text: str) -> tuple[dict, dict, int | None, list]:
         "bank": "qris", "male": "0", "female": "0",
         "birthdate": "", "address": "", "id_province": "", "id_district": ""
     }
-    cookies = {"_ga":"", "_ga_TMVP85FKW9":"", "ci_session":""}
+    cookies = {"_ga": "", "_ga_TMVP85FKW9": "", "ci_session": ""}
     reminder_minutes = None
     errors = []
 
@@ -1470,7 +1559,7 @@ def parse_form_block_bromo(text: str) -> tuple[dict, dict, int | None, list]:
         val = value.strip()
         if key in FORM_KEYS_BROMO:
             mapped = FORM_KEYS_BROMO[key]
-            if mapped in {"_ga","_ga_TMVP85FKW9","ci_session"}:
+            if mapped in {"_ga", "_ga_TMVP85FKW9", "ci_session"}:
                 cookies[mapped] = val
             elif mapped == "reminder_minutes":
                 if val:
@@ -1484,21 +1573,23 @@ def parse_form_block_bromo(text: str) -> tuple[dict, dict, int | None, list]:
     if not profile["name"]: errors.append("Nama wajib.")
     if not profile["identity_no"]: errors.append("No KTP wajib.")
     if not profile["hp"]: errors.append("No HP wajib.")
-    if profile["id_gate"] and profile["id_gate"] not in {"1","2","3","4"}:
+    if profile["id_gate"] and profile["id_gate"] not in {"1", "2", "3", "4"}:
         errors.append("Pintu Masuk harus 1/2/3/4.")
-    if profile["id_vehicle"] and profile["id_vehicle"] not in {"1","2","3","4","6"}:
+    if profile["id_vehicle"] and profile["id_vehicle"] not in {"1", "2", "3", "4", "6"}:
         errors.append("Jenis Kendaraan harus 1/2/3/4/6.")
-    if profile["vehicle_count"] and (not profile["vehicle_count"].isdigit() or not (1 <= int(profile["vehicle_count"]) <= 20)):
+    if profile["vehicle_count"] and (
+            not profile["vehicle_count"].isdigit() or not (1 <= int(profile["vehicle_count"]) <= 20)):
         errors.append("Jumlah Kendaraan harus 1-20.")
     # normalisasi bank untuk bromo juga
-    valid_banks = {"qris":"qris","va-mandiri":"VA-Mandiri","va-bni":"VA-BNI"}
+    valid_banks = {"qris": "qris", "va-mandiri": "VA-Mandiri", "va-bni": "VA-BNI"}
     profile["bank"] = valid_banks.get((profile.get("bank") or "qris").strip().lower(), "qris")
-    for fld in ["male","female"]:
+    for fld in ["male", "female"]:
         if profile[fld] and (not profile[fld].isdigit() or not (0 <= int(profile[fld]) <= 19)):
-            errors.append(f"{'Laki-laki' if fld=='male' else 'Perempuan'} harus 0–19.")
+            errors.append(f"{'Laki-laki' if fld == 'male' else 'Perempuan'} harus 0–19.")
     if profile["birthdate"] and not re.fullmatch(r"\d{4}-\d{2}-\d{2}", profile["birthdate"]):
         errors.append("Tanggal Lahir harus YYYY-MM-DD.")
     return profile, cookies, reminder_minutes, errors
+
 
 # =================== TELEGRAM ===================
 HELP_TEXT = (
@@ -1544,7 +1635,6 @@ HELP_TEXT = (
     "   • Format tanggal fleksibel (YYYY-MM-DD, DD-MM-YYYY, atau '30 September 2025')\n"
     "   • Lihat contoh lengkap isi form: /examples\n"
 )
-
 
 FORMAT_BROMO_EXAMPLE = (
     "[Contoh Isi Form BROMO]\n"
@@ -1600,6 +1690,7 @@ FORMAT_SEMERU_EXAMPLE = (
     "Ingatkan (menit)  : 15\n"
 )
 
+
 async def examples_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(FORMAT_BROMO_EXAMPLE)
     await update.message.reply_text(FORMAT_SEMERU_EXAMPLE)
@@ -1608,8 +1699,10 @@ async def examples_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Halo! Bot siap.\n\n" + HELP_TEXT)
 
+
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(HELP_TEXT)
+
 
 async def set_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -1619,11 +1712,13 @@ async def set_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     set_ci(uid, context.args[0].strip())
     await update.message.reply_text("ci_session disimpan ✅")
 
+
 # ====== Conversations ======
 BOOK_ASK_FORM, BOOK_CONFIRM = range(2)
 SCHED_ASK_FORM, SCHED_CONFIRM = range(2)
 BOOK_ASK_FORM_SEM, BOOK_CONFIRM_SEM = range(2)
 SCHED_ASK_FORM_SEM, SCHED_CONFIRM_SEM = range(2)
+
 
 # ---------- utilities ----------
 def require_job_queue(context: ContextTypes.DEFAULT_TYPE):
@@ -1632,11 +1727,13 @@ def require_job_queue(context: ContextTypes.DEFAULT_TYPE):
         raise RuntimeError("JobQueue tidak aktif. Install: pip install 'python-telegram-bot[job-queue]'")
     return jq
 
+
 def make_job_name(prefix: str, uid: str, leader_name: str, booking_iso: str, exec_iso: str, hhmm: str) -> str:
     slug = slugify(leader_name or "ketua")
-    return f"{prefix}-{uid}-{slug}-{booking_iso}-{exec_iso}-{hhmm.replace(':','')}"
+    return f"{prefix}-{uid}-{slug}-{booking_iso}-{exec_iso}-{hhmm.replace(':', '')}"
 
-def parse_hhmmss(s: str) -> tuple[int,int,int]:
+
+def parse_hhmmss(s: str) -> tuple[int, int, int]:
     if not re.fullmatch(r"\d{2}:\d{2}(:\d{2})?", s):
         raise ValueError("Jam harus HH:MM atau HH:MM:SS")
     parts = s.split(":")
@@ -1645,6 +1742,7 @@ def parse_hhmmss(s: str) -> tuple[int,int,int]:
     if not (0 <= hh <= 23 and 0 <= mm <= 59 and 0 <= ss <= 59):
         raise ValueError("Jam di luar rentang 00:00[:00]..23:59[:59]")
     return hh, mm, ss
+
 
 # Simpan index -> job_name per user agar callback_data pendek
 def _ensure_job_index(context: ContextTypes.DEFAULT_TYPE, uid: str, jobs_store: dict) -> dict[int, str]:
@@ -1656,10 +1754,12 @@ def _ensure_job_index(context: ContextTypes.DEFAULT_TYPE, uid: str, jobs_store: 
     idxmap_all[uid] = idxmap
     return idxmap
 
+
 def _get_job_name_by_idx(context: ContextTypes.DEFAULT_TYPE, uid: str, idx: int) -> str | None:
     idxmap_all = context.bot_data.get("jobs_index", {})
     idxmap = idxmap_all.get(uid) or {}
     return idxmap.get(idx)
+
 
 # ---------- BROMO ----------
 async def book_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1670,7 +1770,8 @@ async def book_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("Format: /book <tgl_booking>")
         return ConversationHandler.END
-    try: iso = parse_date_indo_to_iso(" ".join(context.args))
+    try:
+        iso = parse_date_indo_to_iso(" ".join(context.args))
     except Exception as e:
         await update.message.reply_text(f"Format tanggal salah: {e}")
         return ConversationHandler.END
@@ -1678,6 +1779,7 @@ async def book_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["booking_iso"] = iso
     await update.message.reply_text(FORM_PROMPT_BROMO)  # no Markdown
     return BOOK_ASK_FORM
+
 
 async def book_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile, cookies, reminder_minutes, errors = parse_form_block_bromo(update.message.text)
@@ -1690,7 +1792,8 @@ async def book_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     iso = context.user_data["booking_iso"]
     total = 1 + int(profile["male"]) + int(profile["female"])
-    cookie_hint = ", ".join([f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga","_ga_TMVP85FKW9","ci_session"]])
+    cookie_hint = ", ".join(
+        [f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga", "_ga_TMVP85FKW9", "ci_session"]])
     remind_txt = f"{reminder_minutes} menit" if reminder_minutes is not None else "tidak"
     summary = (
         f"[BROMO]\nTanggal Booking: {iso}\n"
@@ -1704,8 +1807,9 @@ async def book_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(summary)
     return BOOK_CONFIRM
 
+
 async def book_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.strip().lower() not in {"ya","y","yes"}:
+    if update.message.text.strip().lower() not in {"ya", "y", "yes"}:
         await update.message.reply_text("Dibatalkan.")
         return ConversationHandler.END
     uid = str(update.effective_user.id)
@@ -1714,9 +1818,10 @@ async def book_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     extra = ""
     if raw:
-        extra = f"\n\n[Server]\nmessage: {raw.get('message','-')}\nlink: {raw.get('booking_link') or raw.get('link_redirect') or '-'}"
+        extra = f"\n\n[Server]\nmessage: {raw.get('message', '-')}\nlink: {raw.get('booking_link') or raw.get('link_redirect') or '-'}"
     await update.message.reply_text(("✅ " if ok else "❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra)
     return ConversationHandler.END
+
 
 async def schedule_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -1728,7 +1833,7 @@ async def schedule_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
     try:
         booking_iso = parse_date_indo_to_iso(context.args[0])
-        exec_iso    = parse_date_indo_to_iso(context.args[1])
+        exec_iso = parse_date_indo_to_iso(context.args[1])
     except Exception as e:
         await update.message.reply_text(f"Format tanggal salah: {e}")
         return ConversationHandler.END
@@ -1737,14 +1842,16 @@ async def schedule_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         parse_hhmmss(hhmm)
     except Exception as e:
-        await update.message.reply_text(str(e)); return ConversationHandler.END
+        await update.message.reply_text(str(e));
+        return ConversationHandler.END
 
     context.user_data.clear()
     context.user_data["booking_iso"] = booking_iso
-    context.user_data["exec_iso"]    = exec_iso
-    context.user_data["time"]        = hhmm
+    context.user_data["exec_iso"] = exec_iso
+    context.user_data["time"] = hhmm
     await update.message.reply_text(FORM_PROMPT_BROMO)
     return SCHED_ASK_FORM
+
 
 async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     profile, cookies, reminder_minutes, errors = parse_form_block_bromo(update.message.text)
@@ -1755,7 +1862,8 @@ async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["cookies"] = cookies
     context.user_data["reminder_minutes"] = reminder_minutes
 
-    cookie_hint = ", ".join([f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga","_ga_TMVP85FKW9","ci_session"]])
+    cookie_hint = ", ".join(
+        [f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga", "_ga_TMVP85FKW9", "ci_session"]])
     remind_txt = f"{reminder_minutes} menit" if reminder_minutes is not None else "tidak"
     total = 1 + int(profile["male"]) + int(profile["female"])
     summary = (
@@ -1771,14 +1879,15 @@ async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TY
     await update.message.reply_text(summary)
     return SCHED_CONFIRM
 
+
 # ---------- SCHEDULER SHARED ----------
 async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
     from datetime import timedelta
 
     data = context.job.data or {}
-    uid  = str(data["user_id"])
+    uid = str(data["user_id"])
     site = data["site"]
-    iso  = data["iso"]
+    iso = data["iso"]
     prof = data["profile"]
     job_cookies = data.get("cookies") or {}
     chat_id = context.job.chat_id
@@ -1841,7 +1950,8 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
         return
 
     # Kuota ada → eksekusi booking dan hentikan polling
-    await context.bot.send_message(chat_id, text=f"[Polling {site}] Kuota tersedia: {cap['quota']} — eksekusi booking sekarang.")
+    await context.bot.send_message(chat_id,
+                                   text=f"[Polling {site}] Kuota tersedia: {cap['quota']} — eksekusi booking sekarang.")
     if site == "bromo":
         ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies)
     else:
@@ -1865,15 +1975,16 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
 async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     uid = str(data["user_id"])
-    site = data["site"]            # 'bromo' | 'semeru'
-    iso  = data["iso"]
+    site = data["site"]  # 'bromo' | 'semeru'
+    iso = data["iso"]
     prof = data["profile"]
     job_cookies = data.get("cookies") or {}
     chat_id = context.job.chat_id
 
     ci = get_ci(uid)  # global fallback
     if not ci and not job_cookies.get("ci_session"):
-        await context.bot.send_message(chat_id, text=f"[Jadwal {site}] ci_session kosong/expired. /set_session atau /job_update_cookies dulu.")
+        await context.bot.send_message(chat_id,
+                                       text=f"[Jadwal {site}] ci_session kosong/expired. /set_session atau /job_update_cookies dulu.")
         return
 
     jq = require_jq(context)
@@ -1886,12 +1997,13 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         if not cap:
             await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {iso}: tanggal tidak ditemukan.")
         else:
-            await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
+            await context.bot.send_message(chat_id,
+                                           text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
 
         # aktifkan polling per menit
         poll_name = f"poll-{job_name}"
         for j in jq.get_jobs_by_name(poll_name):
-            j.schedule_removal()   # pastikan tidak dobel
+            j.schedule_removal()  # pastikan tidak dobel
         jq.run_repeating(
             poll_capacity_job,
             interval=60,
@@ -1919,24 +2031,28 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         return
 
     # kalau kuota tersedia langsung eksekusi seperti biasa
-    await context.bot.send_message(chat_id, text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
+    await context.bot.send_message(chat_id,
+                                   text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
     if site == "bromo":
         ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies)
     else:
-        leader  = prof.get("_leader", {})
+        leader = prof.get("_leader", {})
         members = prof.get("_members", [])
         ok, msg, elapsed_s, raw = do_booking_flow_semeru(ci, iso, leader, members, job_cookies=job_cookies)
 
     extra = ""
     if raw:
-        server_msg = raw.get("message","-")
+        server_msg = raw.get("message", "-")
         link = raw.get("booking_link") or raw.get("link_redirect") or "-"
         extra = f"\n[Server]\nmessage: {server_msg}\nlink: {link}"
-    await context.bot.send_message(chat_id, text=("[Jadwal] ✅ " if ok else "[Jadwal] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra)
+    await context.bot.send_message(chat_id, text=(
+                                                     "[Jadwal] ✅ " if ok else "[Jadwal] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra)
+
 
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
-    uid = str(data["user_id"]); job_name = data["job_name"]
+    uid = str(data["user_id"]);
+    job_name = data["job_name"]
     rec = get_jobs_store(uid).get(job_name)
     if not rec: return
     chat_id = rec.get("chat_id")
@@ -1944,6 +2060,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     def mask(s):
         if not s: return "(kosong)"
         return s[:6] + "..." + s[-4:]
+
     ck = rec.get("cookies", {})
     msg = (
         f"⏰ Reminder job:\n{job_name}\n\n"
@@ -1957,6 +2074,7 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
     )
     await context.bot.send_message(chat_id, text=msg)
 
+
 def jobs_live_names(context: ContextTypes.DEFAULT_TYPE) -> set[str]:
     jq = getattr(context.application, "job_queue", None)
     live = set()
@@ -1965,11 +2083,13 @@ def jobs_live_names(context: ContextTypes.DEFAULT_TYPE) -> set[str]:
             if j.name: live.add(j.name)
     return live
 
+
 def require_jq(context: ContextTypes.DEFAULT_TYPE):
     jq = getattr(context.application, "job_queue", None)
     if jq is None:
         raise RuntimeError("JobQueue tidak aktif. Install: pip install 'python-telegram-bot[job-queue]'")
     return jq
+
 
 def resolve_job_selector(uid: str, selector: str) -> str | None:
     jobs_store = get_jobs_store(uid)
@@ -1977,20 +2097,24 @@ def resolve_job_selector(uid: str, selector: str) -> str | None:
     names = sorted(jobs_store.keys())
     if selector.isdigit():
         idx = int(selector)
-        return names[idx-1] if 1 <= idx <= len(names) else None
+        return names[idx - 1] if 1 <= idx <= len(names) else None
     return selector if selector in jobs_store else None
+
 
 def _fmt_len(s: str, n: int) -> str:
     s = str(s)
     return s[:n].ljust(n)
 
+
 def _detect_site(job_name: str) -> str:
     return "SEMERU" if job_name.startswith("semeru-") else "BROMO"
+
 
 def _exec_dt_str(rec: dict) -> str:
     # format singkat eksekusi: YYYY-MM-DD HH:MM
     t = (rec.get("time") or "00:00")[:5]
-    return f"{rec.get('exec_iso','????-??-??')} {t}"
+    return f"{rec.get('exec_iso', '????-??-??')} {t}"
+
 
 def _participants(rec: dict) -> int:
     prof = rec.get("profile", {})
@@ -2006,6 +2130,7 @@ def _participants(rec: dict) -> int:
     mem = prof.get("_members", [])
     return 1 + (len(mem) if isinstance(mem, list) else 0)
 
+
 def _cookies_badge(rec: dict) -> str:
     ck = rec.get("cookies", {}) or {}
     marks = []
@@ -2014,27 +2139,30 @@ def _cookies_badge(rec: dict) -> str:
         marks.append("🍪")
     return "".join(marks)
 
+
 def _status_badge(name: str, live: set[str]) -> str:
     return "🟢" if name in live else "⚪"
 
+
 def _sort_key(item: tuple[str, dict]) -> tuple[str, str]:
     name, rec = item
-    return (rec.get("exec_iso","9999-99-99"), rec.get("time","99:99:99"))
+    return (rec.get("exec_iso", "9999-99-99"), rec.get("time", "99:99:99"))
+
 
 def _render_jobs_table(jobs_store: dict, live: set[str]) -> list[str]:
     if not jobs_store:
         return ["Belum ada job terjadwal."]
 
     header = (
-        _fmt_len("#", 3) + " " +
-        _fmt_len("ST", 2) + " " +
-        _fmt_len("SITE", 6) + " " +
-        _fmt_len("BOOKING", 10) + " " +
-        _fmt_len("EKSEKUSI", 16) + " " +
-        _fmt_len("LEADER", 16) + " " +
-        _fmt_len("PAX", 3) + " " +
-        "COOK " +
-        "JOB"
+            _fmt_len("#", 3) + " " +
+            _fmt_len("ST", 2) + " " +
+            _fmt_len("SITE", 6) + " " +
+            _fmt_len("BOOKING", 10) + " " +
+            _fmt_len("EKSEKUSI", 16) + " " +
+            _fmt_len("LEADER", 16) + " " +
+            _fmt_len("PAX", 3) + " " +
+            "COOK " +
+            "JOB"
     )
     sep = "—" * len(header)
 
@@ -2046,15 +2174,15 @@ def _render_jobs_table(jobs_store: dict, live: set[str]) -> list[str]:
                   or rec.get("profile", {}).get("_leader", {}).get("name")
                   or "-")
         row = (
-            _fmt_len(idx, 3) + " " +
-            _fmt_len(_status_badge(name, live), 2) + " " +
-            _fmt_len(_detect_site(name), 6) + " " +
-            _fmt_len(rec.get("booking_iso","-"), 10) + " " +
-            _fmt_len(_exec_dt_str(rec), 16) + " " +
-            _fmt_len(leader, 16) + " " +
-            _fmt_len(_participants(rec), 3) + " " +
-            _fmt_len(_cookies_badge(rec), 4) + " " +
-            name
+                _fmt_len(idx, 3) + " " +
+                _fmt_len(_status_badge(name, live), 2) + " " +
+                _fmt_len(_detect_site(name), 6) + " " +
+                _fmt_len(rec.get("booking_iso", "-"), 10) + " " +
+                _fmt_len(_exec_dt_str(rec), 16) + " " +
+                _fmt_len(leader, 16) + " " +
+                _fmt_len(_participants(rec), 3) + " " +
+                _fmt_len(_cookies_badge(rec), 4) + " " +
+                name
         )
         lines.append(row)
 
@@ -2072,6 +2200,7 @@ def _render_jobs_table(jobs_store: dict, live: set[str]) -> list[str]:
         chunks.append(cur)
 
     return [f"<pre>{c}</pre>" for c in chunks]
+
 
 async def jobs_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -2102,11 +2231,12 @@ async def jobs_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb = [
             [
                 InlineKeyboardButton("ℹ️ Detail", callback_data=f"job:detail:{i}"),
-                InlineKeyboardButton("✏️ Edit",   callback_data=f"job:edit:{i}"),
+                InlineKeyboardButton("✏️ Edit", callback_data=f"job:edit:{i}"),
                 InlineKeyboardButton("🗑️ Cancel", callback_data=f"job:cancel:{i}"),
             ]
         ]
         await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(kb))
+
 
 async def job_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -2123,8 +2253,9 @@ async def job_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     def mask(s):
         if not s: return "(kosong)"
         return s[:6] + "..." + s[-4:]
+
     ck = rec.get("cookies", {})
-    safe_ck = {k: mask(ck.get(k)) for k in ["_ga","_ga_TMVP85FKW9","ci_session"]}
+    safe_ck = {k: mask(ck.get(k)) for k in ["_ga", "_ga_TMVP85FKW9", "ci_session"]}
 
     await update.message.reply_text(json.dumps({
         "job": job_name,
@@ -2136,6 +2267,7 @@ async def job_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "profile": rec["profile"],
         "cookies": safe_ck,
     }, ensure_ascii=False, indent=2))
+
 
 async def job_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -2158,6 +2290,7 @@ async def job_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_storage(storage)
     await update.message.reply_text(f"Job '{job_name}' dibatalkan & dihapus.")
 
+
 # ====== RESCHED CORE ======
 async def reschedule_job(context: ContextTypes.DEFAULT_TYPE, uid: str, old_name: str,
                          booking_iso: str, exec_iso: str, hhmm: str,
@@ -2168,7 +2301,7 @@ async def reschedule_job(context: ContextTypes.DEFAULT_TYPE, uid: str, old_name:
     for j in jq.get_jobs_by_name(f"rem-{old_name}"): j.schedule_removal()
     for j in jq.get_jobs_by_name(f"poll-{old_name}"): j.schedule_removal()
 
-    leader_name = profile.get("name") or profile.get("_leader",{}).get("name","ketua")
+    leader_name = profile.get("name") or profile.get("_leader", {}).get("name", "ketua")
     new_name = make_job_name(site, uid, leader_name, booking_iso, exec_iso, hhmm)
 
     hh, mm, ss = parse_hhmmss(hhmm)
@@ -2189,6 +2322,7 @@ async def reschedule_job(context: ContextTypes.DEFAULT_TYPE, uid: str, old_name:
                         data={"user_id": uid, "job_name": new_name}, chat_id=chat_id)
     return new_name
 
+
 # ====== EDIT/SUPPORT COMMANDS ======
 def parse_kv_pairs(s: str) -> dict:
     out = {}
@@ -2198,6 +2332,7 @@ def parse_kv_pairs(s: str) -> dict:
         k, v = part.split("=", 1)
         out[k.strip()] = v.strip()
     return out
+
 
 async def job_edit_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -2213,8 +2348,10 @@ async def job_edit_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     job_name = resolve_job_selector(uid, selector)
     if not job_name:
-        await update.message.reply_text("Job tidak ditemukan."); return
-    jobs = get_jobs_store(uid); rec = jobs.get(job_name)
+        await update.message.reply_text("Job tidak ditemukan.");
+        return
+    jobs = get_jobs_store(uid);
+    rec = jobs.get(job_name)
     if not rec: await update.message.reply_text("Job tidak ditemukan."); return
 
     site = "semeru" if job_name.startswith("semeru-") else "bromo"
@@ -2223,25 +2360,36 @@ async def job_edit_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                         rec["profile"], rec.get("cookies", {}), rec.get("reminder_minutes"),
                                         rec.get("chat_id", update.effective_chat.id), site)
     except Exception as e:
-        await update.message.reply_text(f"Gagal menjadwalkan ulang: {e}"); return
-    jobs.pop(job_name, None); rec["exec_iso"]=exec_iso; rec["time"]=hhmm; jobs[new_name]=rec; save_storage(storage)
+        await update.message.reply_text(f"Gagal menjadwalkan ulang: {e}");
+        return
+    jobs.pop(job_name, None);
+    rec["exec_iso"] = exec_iso;
+    rec["time"] = hhmm;
+    jobs[new_name] = rec;
+    save_storage(storage)
     await update.message.reply_text(f"Job diubah waktunya ✅\nLama: {job_name}\nBaru: {new_name}")
+
 
 async def job_update_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
     if len(context.args) < 2:
-        await update.message.reply_text("Format: /job_update_cookies <job|index> _ga=...;_ga_TMVP85FKW9=...;ci_session=...")
+        await update.message.reply_text(
+            "Format: /job_update_cookies <job|index> _ga=...;_ga_TMVP85FKW9=...;ci_session=...")
         return
-    selector = context.args[0]; kv = parse_kv_pairs(" ".join(context.args[1:]))
+    selector = context.args[0];
+    kv = parse_kv_pairs(" ".join(context.args[1:]))
     job_name = resolve_job_selector(uid, selector)
     if not job_name: await update.message.reply_text("Job tidak ditemukan."); return
-    jobs = get_jobs_store(uid); rec = jobs.get(job_name)
+    jobs = get_jobs_store(uid);
+    rec = jobs.get(job_name)
     if not rec: await update.message.reply_text("Job tidak ditemukan."); return
 
-    cookies = rec.get("cookies", {}).copy(); changed=[]
-    for k in ["_ga","_ga_TMVP85FKW9","ci_session"]:
+    cookies = rec.get("cookies", {}).copy();
+    changed = []
+    for k in ["_ga", "_ga_TMVP85FKW9", "ci_session"]:
         if k in kv and kv[k]:
-            cookies[k]=kv[k]; changed.append(k)
+            cookies[k] = kv[k];
+            changed.append(k)
     if not changed: await update.message.reply_text("Tidak ada cookie yang diubah."); return
 
     site = "semeru" if job_name.startswith("semeru-") else "bromo"
@@ -2250,14 +2398,21 @@ async def job_update_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE)
                                         rec["profile"], cookies, rec.get("reminder_minutes"),
                                         rec.get("chat_id", update.effective_chat.id), site)
     except Exception as e:
-        await update.message.reply_text(f"Gagal menjadwalkan ulang: {e}"); return
+        await update.message.reply_text(f"Gagal menjadwalkan ulang: {e}");
+        return
 
-    jobs.pop(job_name, None); rec["cookies"]=cookies; jobs[new_name]=rec; save_storage(storage)
-    await update.message.reply_text(f"Cookies job diupdate ✅ ({', '.join(changed)})\nLama: {job_name}\nBaru: {new_name}")
+    jobs.pop(job_name, None);
+    rec["cookies"] = cookies;
+    jobs[new_name] = rec;
+    save_storage(storage)
+    await update.message.reply_text(
+        f"Cookies job diupdate ✅ ({', '.join(changed)})\nLama: {job_name}\nBaru: {new_name}")
+
 
 # ---------- SEMERU booking/schedule ----------
-BOOK_PREFIX_BROMO  = "bromo"
+BOOK_PREFIX_BROMO = "bromo"
 BOOK_PREFIX_SEMERU = "semeru"
+
 
 async def book_semeru_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -2277,6 +2432,7 @@ async def book_semeru_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(FORM_PROMPT_SEMERU)  # no parse_mode
     return BOOK_ASK_FORM_SEM
 
+
 async def book_semeru_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     leader, members, cookies, reminder_minutes, errors = parse_form_block_semeru(update.message.text)
     if errors:
@@ -2288,9 +2444,10 @@ async def book_semeru_collect_form(update: Update, context: ContextTypes.DEFAULT
     context.user_data["reminder_minutes"] = reminder_minutes
 
     iso = context.user_data["booking_iso"]
-    cookie_hint = ", ".join([f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga","_ga_TMVP85FKW9","ci_session"]])
+    cookie_hint = ", ".join(
+        [f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga", "_ga_TMVP85FKW9", "ci_session"]])
     remind_txt = f"{reminder_minutes} menit" if reminder_minutes is not None else "tidak"
-    member_txt = "(tidak ada)" if not members else (", ".join([m.get('nama','?') for m in members]))
+    member_txt = "(tidak ada)" if not members else (", ".join([m.get('nama', '?') for m in members]))
     summary = (
         f"[SEMERU]\nTanggal Booking: {iso}\n"
         f"Ketua: {leader['name']} | KTP:{leader['identity_no']} | HP:{leader['hp']}\n"
@@ -2303,8 +2460,9 @@ async def book_semeru_collect_form(update: Update, context: ContextTypes.DEFAULT
     await update.message.reply_text(summary)
     return BOOK_CONFIRM_SEM
 
+
 async def book_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.strip().lower() not in {"ya","y","yes"}:
+    if update.message.text.strip().lower() not in {"ya", "y", "yes"}:
         await update.message.reply_text("Dibatalkan.")
         return ConversationHandler.END
     uid = str(update.effective_user.id)
@@ -2314,9 +2472,10 @@ async def book_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
     )
     extra = ""
     if raw:
-        extra = f"\n\n[Server]\nmessage: {raw.get('message','-')}\nlink: {raw.get('booking_link') or raw.get('link_redirect') or '-'}"
+        extra = f"\n\n[Server]\nmessage: {raw.get('message', '-')}\nlink: {raw.get('booking_link') or raw.get('link_redirect') or '-'}"
     await update.message.reply_text(("✅ " if ok else "❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra)
     return ConversationHandler.END
+
 
 async def schedule_semeru_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = str(update.effective_user.id)
@@ -2328,7 +2487,7 @@ async def schedule_semeru_entry(update: Update, context: ContextTypes.DEFAULT_TY
         return ConversationHandler.END
     try:
         booking_iso = parse_date_indo_to_iso(context.args[0])
-        exec_iso    = parse_date_indo_to_iso(context.args[1])
+        exec_iso = parse_date_indo_to_iso(context.args[1])
     except Exception as e:
         await update.message.reply_text(f"Format tanggal salah: {e}")
         return ConversationHandler.END
@@ -2336,14 +2495,16 @@ async def schedule_semeru_entry(update: Update, context: ContextTypes.DEFAULT_TY
     try:
         parse_hhmmss(hhmm)
     except Exception as e:
-        await update.message.reply_text(str(e)); return ConversationHandler.END
+        await update.message.reply_text(str(e));
+        return ConversationHandler.END
 
     context.user_data.clear()
     context.user_data["booking_iso"] = booking_iso
-    context.user_data["exec_iso"]    = exec_iso
-    context.user_data["time"]        = hhmm
+    context.user_data["exec_iso"] = exec_iso
+    context.user_data["time"] = hhmm
     await update.message.reply_text(FORM_PROMPT_SEMERU)  # no Markdown
     return SCHED_ASK_FORM_SEM
+
 
 async def schedule_semeru_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     leader, members, cookies, reminder_minutes, errors = parse_form_block_semeru(update.message.text)
@@ -2355,9 +2516,10 @@ async def schedule_semeru_collect_form(update: Update, context: ContextTypes.DEF
     context.user_data["cookies"] = cookies
     context.user_data["reminder_minutes"] = reminder_minutes
 
-    cookie_hint = ", ".join([f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga","_ga_TMVP85FKW9","ci_session"]])
+    cookie_hint = ", ".join(
+        [f"{k}={'(ada)' if cookies.get(k) else '(kosong)'}" for k in ["_ga", "_ga_TMVP85FKW9", "ci_session"]])
     remind_txt = f"{reminder_minutes} menit" if reminder_minutes is not None else "tidak"
-    member_txt = "(tidak ada)" if not members else (", ".join([m.get('nama','?') for m in members]))
+    member_txt = "(tidak ada)" if not members else (", ".join([m.get('nama', '?') for m in members]))
     summary = (
         f"[Jadwal SEMERU]\n"
         f"- Booking: {context.user_data['booking_iso']}\n"
@@ -2371,25 +2533,28 @@ async def schedule_semeru_collect_form(update: Update, context: ContextTypes.DEF
     await update.message.reply_text(summary)
     return SCHED_CONFIRM_SEM
 
+
 async def schedule_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text.strip().lower() not in {"ya","y","yes"}:
+    if update.message.text.strip().lower() not in {"ya", "y", "yes"}:
         await update.message.reply_text("Dibatalkan.")
         return ConversationHandler.END
     try:
         jq = require_job_queue(context)
     except RuntimeError as e:
-        await update.message.reply_text(str(e)); return ConversationHandler.END
+        await update.message.reply_text(str(e));
+        return ConversationHandler.END
 
     booking_iso = context.user_data["booking_iso"]
-    exec_iso    = context.user_data["exec_iso"]
-    hh, mm, ss  = parse_hhmmss(context.user_data["time"])
+    exec_iso = context.user_data["exec_iso"]
+    hh, mm, ss = parse_hhmmss(context.user_data["time"])
     y, M, d = map(int, exec_iso.split("-"))
     run_at = ASIA_JAKARTA.localize(datetime(y, M, d, hh, mm, ss))
     if run_at < datetime.now(ASIA_JAKARTA):
-        await update.message.reply_text("Waktu eksekusi sudah lewat."); return ConversationHandler.END
+        await update.message.reply_text("Waktu eksekusi sudah lewat.");
+        return ConversationHandler.END
 
     uid = str(update.effective_user.id)
-    leader_name = context.user_data["_leader"].get("name","ketua")
+    leader_name = context.user_data["_leader"].get("name", "ketua")
     job_name = make_job_name(BOOK_PREFIX_SEMERU, uid, leader_name, booking_iso, exec_iso, context.user_data["time"])
 
     for j in jq.get_jobs_by_name(job_name): j.schedule_removal()
@@ -2420,10 +2585,11 @@ async def schedule_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_
 
     await update.message.reply_text(
         f"Terjadwal ✅ (SEMERU)\n- Booking: {booking_iso}\n- Eksekusi: {exec_iso} {context.user_data['time']} (Asia/Jakarta)\n"
-        f"- Reminder: {context.user_data.get('reminder_minutes','tidak')} menit sebelum\n"
+        f"- Reminder: {context.user_data.get('reminder_minutes', 'tidak')} menit sebelum\n"
         f"Job: {job_name}"
     )
     return ConversationHandler.END
+
 
 async def prov_lookup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # /prov Jatim  |  /prov 35  |  /prov Jawa Timur
@@ -2440,6 +2606,7 @@ async def prov_lookup_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"Tidak ditemukan untuk '{q}'. Mungkin maksud: {', '.join(sug)}")
         else:
             await update.message.reply_text(f"Tidak ditemukan untuk '{q}'.")
+
 
 async def kabupaten_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
@@ -2468,9 +2635,11 @@ async def kabupaten_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for part in split_long_message(msg):
         await update.message.reply_text(part)
 
+
 def _mask_cookie(s: str | None) -> str:
     if not s: return "(kosong)"
     return s[:6] + "..." + s[-4:]
+
 
 async def on_jobs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -2507,7 +2676,7 @@ async def on_jobs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Nama   : <code>{name}</code>\n"
             f"Status : {'AKTIF 🟢' if live else 'TIDAK AKTIF ⚪'}\n"
             f"Site   : {site}\n"
-            f"Booking: {rec.get('booking_iso','-')}\n"
+            f"Booking: {rec.get('booking_iso', '-')}\n"
             f"Eksekusi: {_exec_dt_str(rec)} (Asia/Jakarta)\n"
             f"Leader : {leader}\n"
             f"Cookies:\n"
@@ -2532,7 +2701,7 @@ async def on_jobs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif action == "edit":
         # Sederhana: beri template command untuk diedit user
-        tmpl1 = f"/job_edit_time {idx} {rec.get('exec_iso','YYYY-MM-DD')} {rec.get('time','HH:MM')}"
+        tmpl1 = f"/job_edit_time {idx} {rec.get('exec_iso', 'YYYY-MM-DD')} {rec.get('time', 'HH:MM')}"
         tmpl2 = f"/job_update_cookies {idx} _ga=...;_ga_TMVP85FKW9=...;ci_session=..."
         msg = (
             "✏️ <b>Edit Job</b>\n"
@@ -2546,10 +2715,12 @@ async def on_jobs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await q.edit_message_text("Aksi tidak dikenali.")
 
+
 def _mask(s: str | None, head: int = 6, tail: int = 4) -> str:
     if not s: return "-"
     if len(s) <= head + tail: return s
     return s[:head] + "…" + s[-tail:]
+
 
 async def booking_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -2588,17 +2759,17 @@ async def booking_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return
 
     head = (
-        f"📦 <b>Booking</b> <code>{leader.get('code','-')}</code>\n"
-        f"Status: {leader.get('booking_status','-')} | Tgl: {leader.get('date_depart','-')} → {leader.get('date_arrival','-')}\n"
-        f"Total pendaki (server): {leader.get('total_pendaki','-')}\n"
-        f"Secret: <code>{_mask(secret,8,6)}</code>\n"
+        f"📦 <b>Booking</b> <code>{leader.get('code', '-')}</code>\n"
+        f"Status: {leader.get('booking_status', '-')} | Tgl: {leader.get('date_depart', '-')} → {leader.get('date_arrival', '-')}\n"
+        f"Total pendaki (server): {leader.get('total_pendaki', '-')}\n"
+        f"Secret: <code>{_mask(secret, 8, 6)}</code>\n"
         "\n👤 <b>Ketua</b>\n"
-        f"• Nama: {leader.get('leader_name','-')}\n"
+        f"• Nama: {leader.get('leader_name', '-')}\n"
         f"• NIK: {_mask(leader.get('leader_identity_no'))}\n"
         f"• HP: {_mask(leader.get('leader_hp'))}\n"
-        f"• Lahir: {leader.get('leader_birthdate','-')}\n"
-        f"• Email: {leader.get('email','-')} | Country: {leader.get('country','-')}\n"
-        f"• Alamat: {leader.get('leader_address','-')}\n"
+        f"• Lahir: {leader.get('leader_birthdate', '-')}\n"
+        f"• Email: {leader.get('email', '-')} | Country: {leader.get('country', '-')}\n"
+        f"• Alamat: {leader.get('leader_address', '-')}\n"
     )
 
     lines = [head, "\n👥 <b>Anggota</b> (" + str(total) + (f", filter='{filter_q}'" if filter_q else "") + ")\n"]
@@ -2607,13 +2778,14 @@ async def booking_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     else:
         for i, m in enumerate(members, start=1):
             nama = m.get("nama") or "-"
-            nik  = m.get("identity_no") or "-"
-            hp   = m.get("hp_member") or "-"
+            nik = m.get("identity_no") or "-"
+            hp = m.get("hp_member") or "-"
             bday = m.get("birthdate") or "-"
             lines.append(f"{i}. {nama} — NIK:{_mask(nik)} — HP:{_mask(hp)} — Lahir:{bday}")
 
     # pecah jika kepanjangan
     msg = "\n".join(lines)
+
     def split_long_message(msg: str, limit: int = 3900) -> list[str]:
         if len(msg) <= limit:
             return [msg]
@@ -2621,7 +2793,8 @@ async def booking_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         for line in msg.splitlines():
             add = (("\n" if cur else "") + line)
             if len(cur) + len(add) > limit:
-                parts.append(cur); cur = line
+                parts.append(cur);
+                cur = line
             else:
                 cur += add
         if cur: parts.append(cur)
@@ -2629,6 +2802,7 @@ async def booking_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     for part in split_long_message(msg):
         await update.message.reply_text(part, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
 
 # -------- Global Error Handler ----------
 async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2638,6 +2812,7 @@ async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=update.effective_chat.id, text="Maaf, terjadi error tak terduga.")
     except TelegramError:
         pass
+
 
 # =================== BOOT ===================
 def main():
@@ -2671,18 +2846,19 @@ def main():
         entry_points=[CommandHandler("book", book_entry)],
         states={
             BOOK_ASK_FORM: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_collect_form)],
-            BOOK_CONFIRM:  [MessageHandler(filters.TEXT & ~filters.COMMAND, book_confirm)],
+            BOOK_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_confirm)],
         },
-        fallbacks=[CommandHandler("cancel", lambda u,c: u.message.reply_text("Dibatalkan."))],
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Dibatalkan."))],
         name="bromo_book", persistent=False
     ))
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("schedule", schedule_entry)],
         states={
             SCHED_ASK_FORM: [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_collect_form)],
-            SCHED_CONFIRM:  [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u,c: u.message.reply_text("Gunakan flow yang sudah ada (tidak dipakai di kode ini)."))],
+            SCHED_CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: u.message.reply_text(
+                "Gunakan flow yang sudah ada (tidak dipakai di kode ini)."))],
         },
-        fallbacks=[CommandHandler("cancel", lambda u,c: u.message.reply_text("Dibatalkan."))],
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Dibatalkan."))],
         name="bromo_sched", persistent=False
     ))
 
@@ -2691,29 +2867,28 @@ def main():
         entry_points=[CommandHandler("book_semeru", book_semeru_entry)],
         states={
             BOOK_ASK_FORM_SEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_semeru_collect_form)],
-            BOOK_CONFIRM_SEM:  [MessageHandler(filters.TEXT & ~filters.COMMAND, book_semeru_confirm)],
+            BOOK_CONFIRM_SEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, book_semeru_confirm)],
         },
-        fallbacks=[CommandHandler("cancel", lambda u,c: u.message.reply_text("Dibatalkan."))],
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Dibatalkan."))],
         name="semeru_book", persistent=False
     ))
     app.add_handler(ConversationHandler(
         entry_points=[CommandHandler("schedule_semeru", schedule_semeru_entry)],
         states={
             SCHED_ASK_FORM_SEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_semeru_collect_form)],
-            SCHED_CONFIRM_SEM:  [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_semeru_confirm)],
+            SCHED_CONFIRM_SEM: [MessageHandler(filters.TEXT & ~filters.COMMAND, schedule_semeru_confirm)],
         },
-        fallbacks=[CommandHandler("cancel", lambda u,c: u.message.reply_text("Dibatalkan."))],
+        fallbacks=[CommandHandler("cancel", lambda u, c: u.message.reply_text("Dibatalkan."))],
         name="semeru_sched", persistent=False
     ))
 
-
+    app.add_handler(CommandHandler("quota_semeru", quota_semeru_cmd))
     # Contoh format
     app.add_handler(CommandHandler("examples", examples_cmd))
 
-
-
     app.add_error_handler(on_error)
     app.run_polling()
+
 
 if __name__ == "__main__":
     main()
