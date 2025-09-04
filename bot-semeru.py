@@ -1444,14 +1444,14 @@ def do_booking_flow_semeru(
             extra_note += f"\n- (+{len(fail_msgs)-5} error lainnya)"
 
     # TAMPILKAN kode booking + shortcut command detail
-    # ganti '/detail_booking' jika command-mu bernama lain (mis. '/booking_detail')
-    cmd_hint = f"\nDetail cepat: <code>/detail_booking {booking_code}</code>" if booking_code else ""
+    # ganti '/booking_detail' jika command-mu bernama lain
+    cmd_hint = f"\n• Detail cepat: <code>/booking_detail {booking_code}</code>" if booking_code else ""
     msg = (
         "✅ Booking Semeru BERHASIL.\n"
-        f"Kode Booking: <code>{booking_code or '-'}</code>\n"
-        f"Link: {link}\n"
-        f"Anggota berhasil ditambahkan: {added} (di luar ketua)\n"
-        f"Server: {(data_do or {}).get('message','-')}"
+        f"• Kode Booking: <code>{booking_code or '-'}</code>\n"
+        f"• Link: {link}\n"
+        f"• Anggota berhasil ditambahkan: {added} (di luar ketua)\n"
+        f"• Pesan server: {(data_do or {}).get('message','-')}"
         f"{cmd_hint}"
         f"{extra_note}"
     )
@@ -1614,7 +1614,9 @@ HELP_TEXT = (
 
     "🏔️ <b>SEMERU</b>\n"
     "   • /book_semeru <tgl_booking>\n"
-    "   • /schedule_semeru <tgl_booking> <tgl_eksekusi> <HH:MM[:SS]>\n\n"
+    "     └─ contoh: <code>2025-09-30</code> | <code>30-09-2025</code> | <code>30 September 2025</code>\n"
+    "   • /schedule_semeru <tgl_booking> <tgl_eksekusi> <HH:MM[:SS]>\n"
+    "     └─ contoh: <code>/schedule_semeru 2025-09-30 2025-09-29 23:59</code>\n\n"
 
     "🗂️ <b>Manajemen Job</b>\n"
     "   • /jobs — daftar job\n"
