@@ -1,35 +1,37 @@
-# pip install python-telegram-bot==21.4 requests beautifulsoup4 lxml pytz python-dateutil python-dotenv
-
-import os, json, re, logging, time
-from datetime import datetime, timedelta
-import pytz, requests, random
-from bs4 import BeautifulSoup
-from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, ContextTypes, ConversationHandler,
-    MessageHandler, filters
-)
-from telegram.error import TelegramError
-from dotenv import load_dotenv
 import json
 import logging
-from bs4 import BeautifulSoup
-from difflib import get_close_matches
-from telegram.constants import ParseMode
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import os
+import random
+import re
 import time
 from datetime import datetime, timedelta
-import re
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
+
+import pytz
+import requests
+from bs4 import BeautifulSoup
+from difflib import get_close_matches
+from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+from urllib3.util.retry import Retry
 
 from network_opt import (
     create_optimized_session,
-    timed_request,
     prewarm_session,
     short_window_aggressive,
+    timed_request,
 )
 
 # Setup logging
@@ -64,8 +66,6 @@ SEMERU_SECTOR_ID = "3"  # sesuai dump HTML (penting!)
 SEMERU_SITE_LABEL = "Semeru"
 
 STORAGE_FILE = "storage.json"  # { "<user_id>": {"ci_session": "...", "jobs": {...}} }
-
-logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bromo-semeru-bot")
 
 MONTHS_ID = {
@@ -275,11 +275,6 @@ def find_quota_for_date(rows, iso_date: str):
             status = "Tersedia" if quota > 0 else "Habis / Tidak tersedia"
             return {"tanggal_cell": tanggal_text, "quota": quota, "status": status}
     return None
-
-
-# Tambahkan import ini di bagian import atas file (sekali saja)
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 
 def _requests_session_with_retries(total: int = 3, backoff: float = 0.5) -> requests.Session:
@@ -974,10 +969,6 @@ def set_unique_cookie(jar: requests.cookies.RequestsCookieJar, name: str, value:
         except Exception:
             pass
     jar.set(name, value, domain=domain, path=path)
-
-
-import json, re
-from bs4 import BeautifulSoup
 
 
 def extract_tokens_from_html(html: str, debug_name: str = "debug_semeru.html"):
@@ -1908,8 +1899,6 @@ async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ---------- SCHEDULER SHARED ----------
 async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
-    from datetime import timedelta
-
     data = context.job.data or {}
     uid = str(data["user_id"])
     site = data["site"]
