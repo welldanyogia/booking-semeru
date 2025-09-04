@@ -1699,11 +1699,19 @@ async def examples_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Halo! Bot siap.\n\n" + HELP_TEXT)
+    await update.message.reply_text(
+        "Halo! Bot siap.\n\n" + HELP_TEXT,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(HELP_TEXT)
+    await update.message.reply_text(
+        HELP_TEXT,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 async def set_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1821,7 +1829,11 @@ async def book_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
     extra = ""
     if raw:
         extra = f"\n\n[Server]\nmessage: {raw.get('message', '-')}\nlink: {raw.get('booking_link') or raw.get('link_redirect') or '-'}"
-    await update.message.reply_text(("✅ " if ok else "❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra)
+    await update.message.reply_text(
+        ("✅ " if ok else "❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
     return ConversationHandler.END
 
 
@@ -1969,7 +1981,9 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_message(
         chat_id,
-        text=("[Polling] ✅ " if ok else "[Polling] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra
+        text=("[Polling] ✅ " if ok else "[Polling] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
     )
     context.job.schedule_removal()
 
@@ -2047,8 +2061,12 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         server_msg = raw.get("message", "-")
         link = raw.get("booking_link") or raw.get("link_redirect") or "-"
         extra = f"\n[Server]\nmessage: {server_msg}\nlink: {link}"
-    await context.bot.send_message(chat_id, text=(
-                                                     "[Jadwal] ✅ " if ok else "[Jadwal] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra)
+    await context.bot.send_message(
+        chat_id,
+        text=("[Jadwal] ✅ " if ok else "[Jadwal] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
 
 
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
@@ -2475,7 +2493,11 @@ async def book_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
     extra = ""
     if raw:
         extra = f"\n\n[Server]\nmessage: {raw.get('message', '-')}\nlink: {raw.get('booking_link') or raw.get('link_redirect') or '-'}"
-    await update.message.reply_text(("✅ " if ok else "❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra)
+    await update.message.reply_text(
+        ("✅ " if ok else "❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True,
+    )
     return ConversationHandler.END
 
 
