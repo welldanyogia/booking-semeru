@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ from network_opt import (
     short_window_aggressive,
     timed_request,
 )
+from monitor_latency import HOST, monitor_latency_loop, ping_latency
 
 # Setup logging
 logging.basicConfig(
@@ -1726,6 +1728,41 @@ async def set_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("ci_session disimpan ✅")
 
 
+async def monitor_latency_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start latency monitoring; only allowed in group chats."""
+    chat_type = update.effective_chat.type
+    if chat_type not in ("group", "supergroup"):
+        await update.message.reply_text("Perintah ini hanya bisa dijalankan di grup.")
+        return
+
+    chat_id = update.effective_chat.id
+    loop = context.application.loop
+
+    def send_to_group(text: str) -> None:
+        asyncio.run_coroutine_threadsafe(
+            context.bot.send_message(chat_id=chat_id, text=text),
+            loop,
+        )
+
+    await update.message.reply_text("Memulai monitoring latency...")
+    context.application.create_task(asyncio.to_thread(monitor_latency_loop, send_to_group))
+
+
+async def latency_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Check latency once; group-only."""
+    chat_type = update.effective_chat.type
+    if chat_type not in ("group", "supergroup"):
+        await update.message.reply_text("Perintah ini hanya bisa dijalankan di grup.")
+        return
+
+    latency = ping_latency(HOST)
+    if latency is not None:
+        msg = f"Latency: {latency:.2f} ms"
+    else:
+        msg = "Ping failed"
+    await update.message.reply_text(msg)
+
+
 # ====== Conversations ======
 BOOK_ASK_FORM, BOOK_CONFIRM = range(2)
 SCHED_ASK_FORM, SCHED_CONFIRM = range(2)
@@ -2959,6 +2996,8 @@ def main():
     # basic
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("latency", latency_cmd))
+    app.add_handler(CommandHandler("monitor_latency", monitor_latency_cmd))
     app.add_handler(CommandHandler("set_session", set_session))
     app.add_handler(CommandHandler("jobs", jobs_list))
     app.add_handler(CommandHandler("job_detail", job_detail))
