@@ -36,7 +36,7 @@ Panduan setup dan deploy bot Telegram untuk "war tiket" menggunakan VPS Ubuntu.
 
 1. **Kloning repositori dan masuk ke foldernya**
    ```bash
-   git clone https://github.com/yourusername/booking-semeru.git
+   git clone https://github.com/welldanyogia/booking-semeru.git
    cd booking-semeru
    ```
 2. **Jalankan installer**
