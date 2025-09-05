@@ -34,7 +34,7 @@ from network_opt import (
     short_window_aggressive,
     timed_request,
 )
-from monitor_latency import monitor_latency_loop
+from monitor_latency import HOST, monitor_latency_loop, ping_latency
 
 # Setup logging
 logging.basicConfig(
@@ -1728,6 +1728,45 @@ async def set_session(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("ci_session disimpan ✅")
 
 
+async def ping_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reply with single ping latency."""
+    host = HOST
+    if context.args:
+        host = context.args[0]
+    latency = ping_latency(host)
+    if latency is None:
+        await update.message.reply_text(f"Ping ke {host} gagal")
+    else:
+        await update.message.reply_text(f"Latency ke {host}: {latency:.2f} ms")
+
+
+async def speedtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Run network speedtest (download/upload)."""
+    await update.message.reply_text("Menjalankan speedtest, mohon tunggu...")
+
+    def _run_speedtest():
+        import speedtest
+
+        st = speedtest.Speedtest()
+        st.get_best_server()
+        st.download()
+        st.upload()
+        return st.results
+
+    try:
+        results = await asyncio.to_thread(_run_speedtest)
+    except Exception as e:
+        await update.message.reply_text(f"Speedtest gagal: {e}")
+        return
+
+    down_mbps = results.download / 1_000_000
+    up_mbps = results.upload / 1_000_000
+    ping_ms = results.ping
+    await update.message.reply_text(
+        f"Ping: {ping_ms:.2f} ms\nDownload: {down_mbps:.2f} Mbps\nUpload: {up_mbps:.2f} Mbps"
+    )
+
+
 async def monitor_latency_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start latency monitoring; only allowed in group chats."""
     chat_type = update.effective_chat.type
@@ -2981,6 +3020,8 @@ def main():
     # basic
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("ping", ping_cmd))
+    app.add_handler(CommandHandler("speedtest", speedtest_cmd))
     app.add_handler(CommandHandler("monitor_latency", monitor_latency_cmd))
     app.add_handler(CommandHandler("set_session", set_session))
     app.add_handler(CommandHandler("jobs", jobs_list))
