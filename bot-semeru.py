@@ -1,29 +1,38 @@
-# pip install python-telegram-bot==21.4 requests beautifulsoup4 lxml pytz python-dateutil python-dotenv
-
-import os, json, re, logging, time
-from datetime import datetime, timedelta
-import pytz, requests
-from bs4 import BeautifulSoup
-from telegram import Update
-from telegram.ext import (
-    Application, CommandHandler, ContextTypes, ConversationHandler,
-    MessageHandler, filters
-)
-from telegram.error import TelegramError
-from dotenv import load_dotenv
 import json
 import logging
-from bs4 import BeautifulSoup
-from difflib import get_close_matches
-from telegram.constants import ParseMode
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import CallbackQueryHandler
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+import os
+import random
+import re
 import time
 from datetime import datetime, timedelta
-import re
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import parse_qs, urlparse
+
+import pytz
+import requests
+from bs4 import BeautifulSoup
+from difflib import get_close_matches
+from dotenv import load_dotenv
+from requests.adapters import HTTPAdapter
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.constants import ParseMode
+from telegram.error import TelegramError
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+from urllib3.util.retry import Retry
+
+from network_opt import (
+    create_optimized_session,
+    prewarm_session,
+    short_window_aggressive,
+    timed_request,
+)
 
 # Setup logging
 logging.basicConfig(
@@ -57,8 +66,6 @@ SEMERU_SECTOR_ID = "3"  # sesuai dump HTML (penting!)
 SEMERU_SITE_LABEL = "Semeru"
 
 STORAGE_FILE = "storage.json"  # { "<user_id>": {"ci_session": "...", "jobs": {...}} }
-
-logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bromo-semeru-bot")
 
 MONTHS_ID = {
@@ -164,6 +171,9 @@ def save_storage(data):
 
 storage = load_storage()
 
+# Session cache untuk pre-warming
+PREWARMED_SESSIONS: dict[str, requests.Session] = {}
+
 
 def get_ci(uid: str) -> str:
     return storage.get(uid, {}).get("ci_session", "")
@@ -267,11 +277,6 @@ def find_quota_for_date(rows, iso_date: str):
     return None
 
 
-# Tambahkan import ini di bagian import atas file (sekali saja)
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
-
-
 def _requests_session_with_retries(total: int = 3, backoff: float = 0.5) -> requests.Session:
     """
     Session requests dengan retry & backoff:
@@ -344,7 +349,7 @@ def check_capacity(iso_date: str, site: str) -> dict | None:
 
 
 def make_session_with_cookies(ci_session: str, extra_cookies: dict | None = None):
-    sess = requests.Session()
+    sess = create_optimized_session()
     ua = ('Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) '
           'AppleWebKit/537.36 (KHTML, like Gecko) '
           'Chrome/139.0.0.0 Mobile Safari/537.36 Edg/139.0.0.0')
@@ -637,7 +642,8 @@ def add_or_update_members_bromo(sess: requests.Session, secret: str, male: int, 
 
 
 def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict,
-                          job_cookies: dict | None = None) -> tuple[bool, str, float, dict | None]:
+                          job_cookies: dict | None = None,
+                          sess: requests.Session | None = None) -> tuple[bool, str, float, dict | None]:
     t0 = time.perf_counter()
 
     # ✅ JIT: cek kuota saat eksekusi
@@ -647,7 +653,7 @@ def do_booking_flow_bromo(ci_session: str, iso_date: str, profile: dict,
     if cap["quota"] <= 0:
         return False, f"Kuota {cap['tanggal_cell']}: {cap['quota']} (Tidak tersedia).", time.perf_counter() - t0, None
 
-    sess = make_session_with_cookies(ci_session, job_cookies)
+    sess = sess or make_session_with_cookies(ci_session, job_cookies)
     referer = build_referer_url(SITE_PATH_BROMO, iso_date)
     r = sess.get(referer, timeout=30)
     if r.status_code != 200:
@@ -965,10 +971,6 @@ def set_unique_cookie(jar: requests.cookies.RequestsCookieJar, name: str, value:
     jar.set(name, value, domain=domain, path=path)
 
 
-import json, re
-from bs4 import BeautifulSoup
-
-
 def extract_tokens_from_html(html: str, debug_name: str = "debug_semeru.html"):
     """
     Kembalikan (secret, form_hash, booking_obj).
@@ -1150,7 +1152,8 @@ def do_booking_flow_semeru(
     booking_iso: str,
     leader: dict,
     members: list,
-    job_cookies: dict | None = None
+    job_cookies: dict | None = None,
+    sess: requests.Session | None = None
 ) -> tuple[bool, str, float, dict | None]:
     t0 = time.perf_counter()
     logger = globals().get("log") or logging.getLogger("booking-semeru")
@@ -1169,7 +1172,7 @@ def do_booking_flow_semeru(
 
     # ——— Session & cookies (fresh jar)
     def _new_session():
-        s = requests.Session()
+        s = create_optimized_session()
         ua = ('Mozilla/5.0 (Linux; Android 6.0; Nexus 5 Build/MRA58N) '
               'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/139.0.0.0 Mobile Safari/537.36 Edg/139.0.0.0')
         s.headers.update({
@@ -1190,7 +1193,7 @@ def do_booking_flow_semeru(
             _set("ci_session", ci_session)
         return s
 
-    sess = _new_session()
+    sess = sess or _new_session()
 
     def _prime_secret(sess_obj: requests.Session) -> tuple[str, str]:
         # preflight ringan
@@ -1896,8 +1899,6 @@ async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TY
 
 # ---------- SCHEDULER SHARED ----------
 async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
-    from datetime import timedelta
-
     data = context.job.data or {}
     uid = str(data["user_id"])
     site = data["site"]
@@ -1988,6 +1989,74 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
     context.job.schedule_removal()
 
 
+async def prewarm_session_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    job_name = data.get("job_name")
+    ci = data.get("ci_session", "")
+    cookies = data.get("cookies") or {}
+    sess = make_session_with_cookies(ci, cookies)
+    prewarm_session(sess, BASE)
+    PREWARMED_SESSIONS[job_name] = sess
+
+
+async def poll_get_view_job(context: ContextTypes.DEFAULT_TYPE):
+    data = context.job.data or {}
+    job_name = data.get("job_name")
+    end_at = data.get("end_at")
+    site = data.get("site")
+    iso = data.get("iso")
+    prof = data.get("profile") or {}
+    cookies = data.get("cookies") or {}
+    uid = str(data.get("user_id"))
+    chat_id = data.get("chat_id") or context.job.chat_id
+
+    sess = PREWARMED_SESSIONS.get(job_name)
+    if not sess:
+        ci = get_ci(uid)
+        sess = make_session_with_cookies(ci, cookies)
+        PREWARMED_SESSIONS[job_name] = sess
+
+    resp, _, _ = timed_request(sess, "GET", CAP_URL, timeout=10)
+    html = resp.text
+    last_html = data.get("last_html")
+
+    if last_html and html != last_html:
+        jq = require_jq(context)
+        for j in jq.get_jobs_by_name(job_name):
+            j.schedule_removal()
+        for j in jq.get_jobs_by_name(f"rem-{job_name}"):
+            j.schedule_removal()
+        context.job.schedule_removal()
+
+        ci = get_ci(uid)
+        def attempt():
+            if site == "bromo":
+                return do_booking_flow_bromo(ci, iso, prof, job_cookies=cookies, sess=sess)
+            else:
+                leader = prof.get("_leader", {})
+                members = prof.get("_members", [])
+                return do_booking_flow_semeru(ci, iso, leader, members, job_cookies=cookies, sess=sess)
+
+        ok, msg, elapsed_s, raw = short_window_aggressive(attempt, attempts=3)
+        extra = ""
+        if raw:
+            server_msg = raw.get("message", "-")
+            link = raw.get("booking_link") or raw.get("link_redirect") or "-"
+            extra = f"\n[Server]\nmessage: {server_msg}\nlink: {link}"
+        await context.bot.send_message(
+            chat_id,
+            text=("[Watch] ✅ " if ok else "[Watch] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+        PREWARMED_SESSIONS.pop(job_name, None)
+        return
+
+    data["last_html"] = html
+    context.job.interval = timedelta(seconds=random.uniform(3, 7))
+    if end_at and datetime.now(ASIA_JAKARTA) > end_at:
+        context.job.schedule_removal()
+
 async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     data = context.job.data
     uid = str(data["user_id"])
@@ -2005,6 +2074,8 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
 
     jq = require_jq(context)
     job_name = context.job.name or f"{site}-{uid}-{iso}"
+    for j in jq.get_jobs_by_name(f"view-{job_name}"):
+        j.schedule_removal()
 
     # ✅ cek kapasitas saat eksekusi
     cap = check_capacity(iso, site)
@@ -2049,12 +2120,13 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     # kalau kuota tersedia langsung eksekusi seperti biasa
     await context.bot.send_message(chat_id,
                                    text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
+    sess = PREWARMED_SESSIONS.pop(job_name, None)
     if site == "bromo":
-        ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies)
+        ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies, sess=sess)
     else:
         leader = prof.get("_leader", {})
         members = prof.get("_members", [])
-        ok, msg, elapsed_s, raw = do_booking_flow_semeru(ci, iso, leader, members, job_cookies=job_cookies)
+        ok, msg, elapsed_s, raw = do_booking_flow_semeru(ci, iso, leader, members, job_cookies=job_cookies, sess=sess)
 
     extra = ""
     if raw:
@@ -2304,8 +2376,11 @@ async def job_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         for j in jq.get_jobs_by_name(job_name): j.schedule_removal()
         for j in jq.get_jobs_by_name(f"rem-{job_name}"): j.schedule_removal()
         for j in jq.get_jobs_by_name(f"poll-{job_name}"): j.schedule_removal()
+        for j in jq.get_jobs_by_name(f"prewarm-{job_name}"): j.schedule_removal()
+        for j in jq.get_jobs_by_name(f"view-{job_name}"): j.schedule_removal()
     except RuntimeError:
         pass
+    PREWARMED_SESSIONS.pop(job_name, None)
     get_jobs_store(uid).pop(job_name, None)
     save_storage(storage)
     await update.message.reply_text(f"Job '{job_name}' dibatalkan & dihapus.")
@@ -2320,6 +2395,9 @@ async def reschedule_job(context: ContextTypes.DEFAULT_TYPE, uid: str, old_name:
     for j in jq.get_jobs_by_name(old_name): j.schedule_removal()
     for j in jq.get_jobs_by_name(f"rem-{old_name}"): j.schedule_removal()
     for j in jq.get_jobs_by_name(f"poll-{old_name}"): j.schedule_removal()
+    for j in jq.get_jobs_by_name(f"prewarm-{old_name}"): j.schedule_removal()
+    for j in jq.get_jobs_by_name(f"view-{old_name}"): j.schedule_removal()
+    PREWARMED_SESSIONS.pop(old_name, None)
 
     leader_name = profile.get("name") or profile.get("_leader", {}).get("name", "ketua")
     new_name = make_job_name(site, uid, leader_name, booking_iso, exec_iso, hhmm)
@@ -2335,6 +2413,19 @@ async def reschedule_job(context: ContextTypes.DEFAULT_TYPE, uid: str, old_name:
         data={"user_id": uid, "site": site, "iso": booking_iso, "profile": profile, "cookies": cookies},
         chat_id=chat_id
     )
+
+    pre_at = run_at - timedelta(minutes=2)
+    jq.run_once(prewarm_session_job, when=pre_at, name=f"prewarm-{new_name}",
+                data={"job_name": new_name, "ci_session": get_ci(uid), "cookies": cookies},
+                chat_id=chat_id)
+    poll_start = run_at - timedelta(minutes=5)
+    poll_end = run_at + timedelta(minutes=15)
+    jq.run_repeating(poll_get_view_job, interval=timedelta(seconds=5), first=poll_start,
+                     name=f"view-{new_name}",
+                     data={"job_name": new_name, "user_id": uid, "site": site,
+                           "iso": booking_iso, "profile": profile, "cookies": cookies,
+                           "end_at": poll_end, "chat_id": chat_id},
+                     chat_id=chat_id)
     if isinstance(reminder_minutes, int) and reminder_minutes > 0:
         remind_at = run_at - timedelta(minutes=reminder_minutes)
         if remind_at > datetime.now(ASIA_JAKARTA):
@@ -2580,8 +2671,9 @@ async def schedule_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_
     uid = str(update.effective_user.id)
     leader_name = context.user_data["_leader"].get("name", "ketua")
     job_name = make_job_name(BOOK_PREFIX_SEMERU, uid, leader_name, booking_iso, exec_iso, context.user_data["time"])
-
     for j in jq.get_jobs_by_name(job_name): j.schedule_removal()
+    for j in jq.get_jobs_by_name(f"prewarm-{job_name}"): j.schedule_removal()
+    for j in jq.get_jobs_by_name(f"view-{job_name}"): j.schedule_removal()
     jobs_store = get_jobs_store(uid)
     jobs_store[job_name] = {
         "booking_iso": booking_iso,
@@ -2599,6 +2691,21 @@ async def schedule_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_
                 data={"user_id": uid, "site": "semeru", "iso": booking_iso,
                       "profile": jobs_store[job_name]["profile"], "cookies": jobs_store[job_name]["cookies"]},
                 chat_id=update.effective_chat.id)
+
+    pre_at = run_at - timedelta(minutes=2)
+    jq.run_once(prewarm_session_job, when=pre_at, name=f"prewarm-{job_name}",
+                data={"job_name": job_name, "ci_session": get_ci(uid),
+                      "cookies": jobs_store[job_name]["cookies"]},
+                chat_id=update.effective_chat.id)
+    poll_start = run_at - timedelta(minutes=5)
+    poll_end = run_at + timedelta(minutes=15)
+    jq.run_repeating(poll_get_view_job, interval=timedelta(seconds=5), first=poll_start,
+                     name=f"view-{job_name}",
+                     data={"job_name": job_name, "user_id": uid, "site": "semeru",
+                           "iso": booking_iso, "profile": jobs_store[job_name]["profile"],
+                           "cookies": jobs_store[job_name]["cookies"],
+                           "end_at": poll_end, "chat_id": update.effective_chat.id},
+                     chat_id=update.effective_chat.id)
 
     remind_min = context.user_data.get("reminder_minutes")
     if isinstance(remind_min, int) and remind_min > 0:
@@ -2717,10 +2824,13 @@ async def on_jobs_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for j in jq.get_jobs_by_name(name): j.schedule_removal()
             for j in jq.get_jobs_by_name(f"rem-{name}"): j.schedule_removal()
             for j in jq.get_jobs_by_name(f"poll-{name}"): j.schedule_removal()
+            for j in jq.get_jobs_by_name(f"prewarm-{name}"): j.schedule_removal()
+            for j in jq.get_jobs_by_name(f"view-{name}"): j.schedule_removal()
         except RuntimeError:
             pass
         jobs.pop(name, None)
         save_storage(storage)
+        PREWARMED_SESSIONS.pop(name, None)
         await q.edit_message_text(f"✅ Job <code>{name}</code> dibatalkan & dihapus.", parse_mode=ParseMode.HTML)
 
     elif action == "edit":
