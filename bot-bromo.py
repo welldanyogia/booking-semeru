@@ -1,6 +1,6 @@
 # pip install python-telegram-bot==21.4 requests beautifulsoup4 lxml pytz python-dateutil
 
-import os, json, re, logging, time
+import os, json, re, logging, time, asyncio
 from datetime import datetime, timedelta
 import pytz, requests
 from bs4 import BeautifulSoup
@@ -403,7 +403,7 @@ async def book_collect_form(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["reminder_minutes"] = reminder_minutes
 
     iso = context.user_data["booking_iso"]
-    cap = check_capacity(iso)
+    cap = await asyncio.to_thread(check_capacity, iso)
     if not cap:
         await update.message.reply_text(f"Tanggal {iso} tidak ditemukan di kalender bulan itu.")
         return ConversationHandler.END
@@ -494,7 +494,7 @@ async def schedule_collect_form(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data["reminder_minutes"] = reminder_minutes
 
     iso = context.user_data["booking_iso"]
-    cap = check_capacity(iso)
+    cap = await asyncio.to_thread(check_capacity, iso)
     if not cap:
         await update.message.reply_text(f"Tanggal {iso} tidak ditemukan.")
         return ConversationHandler.END
@@ -650,7 +650,7 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id, text="[Jadwal] ci_session kosong/expired. /set_session atau /job_update_cookies dulu.")
         return
 
-    cap = check_capacity(iso)
+    cap = await asyncio.to_thread(check_capacity, iso)
     if not cap:
         await context.bot.send_message(chat_id, text=f"[Jadwal] {iso}: tanggal tidak ditemukan.")
         return
@@ -658,7 +658,9 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     if cap["quota"] <= 0:
         return
 
-    ok, msg, elapsed_s, raw = do_booking_flow(ci, iso, prof, job_cookies=job_cookies)
+    ok, msg, elapsed_s, raw = await asyncio.to_thread(
+        do_booking_flow, ci, iso, prof, job_cookies=job_cookies
+    )
     extra = ""
     if raw:
         server_msg = raw.get("message","-")

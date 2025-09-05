@@ -2001,7 +2001,7 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
     data["ticks"] = data.get("ticks", 0) + 1
 
     ci = get_ci(uid)  # fallback global
-    cap = check_capacity(iso, site)
+    cap = await asyncio.to_thread(check_capacity, iso, site)
 
     # Belum ada kuota
     if (not cap) or (cap["quota"] <= 0):
@@ -2029,11 +2029,17 @@ async def poll_capacity_job(context: ContextTypes.DEFAULT_TYPE):
     await context.bot.send_message(chat_id,
                                    text=f"[Polling {site}] Kuota tersedia: {cap['quota']} — eksekusi booking sekarang.")
     if site == "bromo":
-        ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies)
+        ok, msg, elapsed_s, raw = await asyncio.to_thread(
+            do_booking_flow_bromo, ci, iso, prof, job_cookies=job_cookies
+        )
     else:
         leader = prof.get("_leader", {})
         members = prof.get("_members", [])
-        ok, msg, elapsed_s, raw = do_booking_flow_semeru(ci, iso, leader, members, job_cookies=job_cookies)
+        ok, msg, elapsed_s, raw = await asyncio.to_thread(
+            do_booking_flow_semeru,
+            ci, iso, leader, members,
+            job_cookies=job_cookies,
+        )
 
     extra = ""
     if raw:
@@ -2056,7 +2062,7 @@ async def prewarm_session_job(context: ContextTypes.DEFAULT_TYPE):
     ci = data.get("ci_session", "")
     cookies = data.get("cookies") or {}
     sess = make_session_with_cookies(ci, cookies)
-    prewarm_session(sess, BASE)
+    await asyncio.to_thread(prewarm_session, sess, BASE)
     PREWARMED_SESSIONS[job_name] = sess
 
 
@@ -2139,7 +2145,7 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         j.schedule_removal()
 
     # ✅ cek kapasitas saat eksekusi
-    cap = check_capacity(iso, site)
+    cap = await asyncio.to_thread(check_capacity, iso, site)
     if not cap or cap["quota"] <= 0:
         # info kondisi saat ini
         if not cap:
@@ -2183,11 +2189,19 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
                                    text=f"[Jadwal {site}] {cap['tanggal_cell']}\nKuota: {cap['quota']} → {cap['status']}")
     sess = PREWARMED_SESSIONS.pop(job_name, None)
     if site == "bromo":
-        ok, msg, elapsed_s, raw = do_booking_flow_bromo(ci, iso, prof, job_cookies=job_cookies, sess=sess)
+        ok, msg, elapsed_s, raw = await asyncio.to_thread(
+            do_booking_flow_bromo,
+            ci, iso, prof,
+            job_cookies=job_cookies, sess=sess,
+        )
     else:
         leader = prof.get("_leader", {})
         members = prof.get("_members", [])
-        ok, msg, elapsed_s, raw = do_booking_flow_semeru(ci, iso, leader, members, job_cookies=job_cookies, sess=sess)
+        ok, msg, elapsed_s, raw = await asyncio.to_thread(
+            do_booking_flow_semeru,
+            ci, iso, leader, members,
+            job_cookies=job_cookies, sess=sess,
+        )
 
     extra = ""
     if raw:
