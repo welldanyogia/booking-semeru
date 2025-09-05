@@ -1606,9 +1606,9 @@ HELP_TEXT = (
     "   • /examples — contoh format booking\n\n"
 
     "🌍 <b>Lookup Wilayah</b>\n"
-    "   • /prov <nama/kode>\n"
+    "   • /prov <code>&lt;nama/kode&gt;</code>\n"
     "     └─ contoh: <code>/prov Jatim</code> | <code>/prov 35</code>\n"
-    "   • /kab <nama/kode>\n"
+    "   • /kab <code>&lt;nama/kode&gt;</code>\n"
     "     └─ contoh: <code>/kab \"Jawa Timur\"</code> | <code>/kab 35</code>\n\n"
 
     "⛰️ <b>BROMO</b>\n"
