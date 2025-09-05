@@ -5,6 +5,7 @@ import os
 import random
 import re
 import time
+import copy
 from datetime import datetime, timedelta
 from urllib.parse import parse_qs, urlparse
 
@@ -2732,27 +2733,29 @@ async def schedule_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_
     uid = str(update.effective_user.id)
     leader_name = context.user_data["_leader"].get("name", "ketua")
     job_name = make_job_name(BOOK_PREFIX_SEMERU, uid, leader_name, booking_iso, exec_iso, context.user_data["time"])
-    for j in jq.get_jobs_by_name(job_name): j.schedule_removal()
-    for j in jq.get_jobs_by_name(f"prewarm-{job_name}"): j.schedule_removal()
-    for j in jq.get_jobs_by_name(f"view-{job_name}"): j.schedule_removal()
-    import copy
+    for j in jq.get_jobs_by_name(job_name):
+        j.schedule_removal()
+    for j in jq.get_jobs_by_name(f"prewarm-{job_name}"):
+        j.schedule_removal()
+    for j in jq.get_jobs_by_name(f"view-{job_name}"):
+        j.schedule_removal()
+
     profile = {
         "_leader": copy.deepcopy(context.user_data["_leader"]),
         "_members": copy.deepcopy(context.user_data["_members"]),
     }
+    new_cookies = copy.deepcopy(context.user_data.get("cookies", {}))
     jobs_store = get_jobs_store(uid)
 
     # Jika cookies sama dengan job sebelumnya, jalankan segera tanpa menunggu jadwal
-    new_cookies = context.user_data.get("cookies", {})
-    dup_name = None
-    if new_cookies:
-        for name, rec in jobs_store.items():
-            if rec.get("cookies") == new_cookies:
-                dup_name = name
-                break
+    dup_name = next(
+        (name for name, rec in jobs_store.items() if rec.get("cookies") == new_cookies),
+        None,
+    )
     if dup_name:
         await update.message.reply_text(
-            f"Cookies sama dengan job '{dup_name}', menjalankan sekarang.")
+            f"Cookies sama dengan job '{dup_name}', menjalankan sekarang."
+        )
         jq.run_once(
             scheduled_job,
             when=datetime.now(ASIA_JAKARTA),
@@ -2772,11 +2775,11 @@ async def schedule_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_
         "booking_iso": booking_iso,
         "exec_iso": exec_iso,
         "time": context.user_data["time"],
-        "profile": profile,
-        "cookies": new_cookies,
+        "profile": copy.deepcopy(profile),
+        "cookies": copy.deepcopy(new_cookies),
         "reminder_minutes": context.user_data.get("reminder_minutes"),
         "created_at": datetime.now(ASIA_JAKARTA).isoformat(),
-        "chat_id": update.effective_chat.id
+        "chat_id": update.effective_chat.id,
     }
     save_storage(storage)
 
@@ -2789,16 +2792,23 @@ async def schedule_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_
             "site": "semeru",
             "iso": booking_iso,
             "profile": copy.deepcopy(profile),
-            "cookies": jobs_store[job_name]["cookies"],
+            "cookies": copy.deepcopy(new_cookies),
         },
         chat_id=update.effective_chat.id,
     )
 
     pre_at = run_at - timedelta(minutes=2)
-    jq.run_once(prewarm_session_job, when=pre_at, name=f"prewarm-{job_name}",
-                data={"job_name": job_name, "ci_session": get_ci(uid),
-                      "cookies": jobs_store[job_name]["cookies"]},
-                chat_id=update.effective_chat.id)
+    jq.run_once(
+        prewarm_session_job,
+        when=pre_at,
+        name=f"prewarm-{job_name}",
+        data={
+            "job_name": job_name,
+            "ci_session": get_ci(uid),
+            "cookies": copy.deepcopy(new_cookies),
+        },
+        chat_id=update.effective_chat.id,
+    )
     poll_start = run_at - timedelta(minutes=5)
     poll_end = run_at + timedelta(minutes=15)
     jq.run_repeating(
@@ -2812,7 +2822,7 @@ async def schedule_semeru_confirm(update: Update, context: ContextTypes.DEFAULT_
             "site": "semeru",
             "iso": booking_iso,
             "profile": copy.deepcopy(profile),
-            "cookies": jobs_store[job_name]["cookies"],
+            "cookies": copy.deepcopy(new_cookies),
             "end_at": poll_end,
             "chat_id": update.effective_chat.id,
         },
