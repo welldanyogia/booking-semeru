@@ -73,6 +73,8 @@ Skrip mencatat `latency.log` setiap 5 detik hanya pada jam rawan.
 ### Menggunakan perintah Telegram
 - Jalankan perintah `/monitor_latency` dari grup Telegram tempat bot berada.
 - Bot hanya menerima perintah ini di grup dan akan mengirim hasilnya ke grup yang sama.
+- Perintah `/ping` dapat digunakan kapan saja untuk mengecek latensi sekali (opsional sertakan host).
+- Jalankan `/speedtest` untuk mengukur kecepatan download/upload VPS tanpa terikat jam kritis.
 
 ## Tips Tambahan
 - Login ke akun pemesanan lebih awal untuk "pemanasan" koneksi.
