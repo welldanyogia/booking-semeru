@@ -643,6 +643,7 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
     prof = data["profile"]
     job_cookies = data.get("cookies") or {}
     chat_id = context.job.chat_id
+    job_name = context.job.name or ""
 
     ci = get_ci(uid)
     if not ci and not job_cookies.get("ci_session"):
@@ -664,6 +665,46 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         link = raw.get("booking_link") or raw.get("link_redirect") or "-"
         extra = f"\n[Server]\nmessage: {server_msg}\nlink: {link}"
     await context.bot.send_message(chat_id, text=("[Jadwal] ✅ " if ok else "[Jadwal] ❌ ") + msg + f"\n\nWaktu proses: {elapsed_s:.2f} detik" + extra)
+    trigger_next_cookie_job(context, uid, job_name, job_cookies, chat_id)
+
+
+def trigger_next_cookie_job(context: ContextTypes.DEFAULT_TYPE, uid: str, current_name: str,
+                            job_cookies: dict, chat_id: int) -> None:
+    if not job_cookies:
+        return
+    jq = getattr(context.application, "job_queue", None)
+    if jq is None:
+        return
+    now = datetime.now(ASIA_JAKARTA)
+    jobs = get_jobs_store(uid)
+    candidates = []
+    for name, rec in jobs.items():
+        if name == current_name:
+            continue
+        if rec.get("cookies") == job_cookies and jq.get_jobs_by_name(name):
+            t = rec.get("time", "")
+            fmt = "%Y-%m-%d %H:%M:%S" if t.count(":") == 2 else "%Y-%m-%d %H:%M"
+            run_at = ASIA_JAKARTA.localize(datetime.strptime(f"{rec['exec_iso']} {t}", fmt))
+            if run_at > now:
+                candidates.append((run_at, name, rec))
+    if not candidates:
+        return
+    candidates.sort(key=lambda x: x[0])
+    _, next_name, rec = candidates[0]
+    for j in jq.get_jobs_by_name(next_name):
+        j.schedule_removal()
+    jq.run_once(
+        scheduled_job,
+        when=datetime.now(ASIA_JAKARTA),
+        name=next_name,
+        data={
+            "user_id": uid,
+            "iso": rec["booking_iso"],
+            "profile": rec["profile"],
+            "cookies": rec.get("cookies", {}),
+        },
+        chat_id=chat_id,
+    )
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()

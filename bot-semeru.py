@@ -2200,6 +2200,7 @@ async def scheduled_job(context: ContextTypes.DEFAULT_TYPE):
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
     )
+    trigger_next_cookie_job(context, uid, job_name, job_cookies, chat_id, site)
 
 
 async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
@@ -2226,6 +2227,46 @@ async def reminder_job(context: ContextTypes.DEFAULT_TYPE):
         f"Perintah: /job_update_cookies {job_name} _ga=<baru>;_ga_TMVP85FKW9=<baru>;ci_session=<baru>"
     )
     await context.bot.send_message(chat_id, text=msg)
+
+
+def trigger_next_cookie_job(context: ContextTypes.DEFAULT_TYPE, uid: str, current_name: str,
+                             job_cookies: dict, chat_id: int, site: str) -> None:
+    if not job_cookies:
+        return
+    jq = getattr(context.application, "job_queue", None)
+    if jq is None:
+        return
+    now = datetime.now(ASIA_JAKARTA)
+    jobs = get_jobs_store(uid)
+    candidates = []
+    for name, rec in jobs.items():
+        if name == current_name:
+            continue
+        if rec.get("cookies") == job_cookies and jq.get_jobs_by_name(name):
+            t = rec.get("time", "")
+            fmt = "%Y-%m-%d %H:%M:%S" if t.count(":") == 2 else "%Y-%m-%d %H:%M"
+            run_at = ASIA_JAKARTA.localize(datetime.strptime(f"{rec['exec_iso']} {t}", fmt))
+            if run_at > now:
+                candidates.append((run_at, name, rec))
+    if not candidates:
+        return
+    candidates.sort(key=lambda x: x[0])
+    _, next_name, rec = candidates[0]
+    for j in jq.get_jobs_by_name(next_name):
+        j.schedule_removal()
+    jq.run_once(
+        scheduled_job,
+        when=datetime.now(ASIA_JAKARTA),
+        name=next_name,
+        data={
+            "user_id": uid,
+            "site": site,
+            "iso": rec["booking_iso"],
+            "profile": rec["profile"],
+            "cookies": rec.get("cookies", {}),
+        },
+        chat_id=chat_id,
+    )
 
 
 def jobs_live_names(context: ContextTypes.DEFAULT_TYPE) -> set[str]:
