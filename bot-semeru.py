@@ -631,6 +631,38 @@ def get_members_by_secret(secret: str, ci_session: str, page_size: int = 200, se
     return rows, total
 
 
+# ---- util: extract expiry time from booking row ----
+def extract_expiry_from_row(row: dict) -> datetime | None:
+    """Cari informasi waktu kedaluwarsa pembayaran dari row booking."""
+    fields = [
+        "payment_expired",
+        "payment_deadline",
+        "expired_payment",
+        "expired_time",
+        "expired_at",
+        "expired_date",
+        "expired",
+        "expire_time",
+    ]
+    for key in fields:
+        val = row.get(key)
+        if not val:
+            continue
+        if isinstance(val, (int, float)):
+            try:
+                return datetime.fromtimestamp(int(val), ASIA_JAKARTA)
+            except Exception:
+                continue
+        if isinstance(val, str):
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    dt = datetime.strptime(val, fmt)
+                    return ASIA_JAKARTA.localize(dt)
+                except ValueError:
+                    continue
+    return None
+
+
 # =================== BROMO FLOWS ===================
 def add_or_update_members_bromo(sess: requests.Session, secret: str, male: int, female: int, id_country: str = "99"):
     if male < 0 or female < 0: return
@@ -2639,6 +2671,7 @@ async def job_update_cookies(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ---------- SEMERU booking/schedule ----------
 BOOK_PREFIX_BROMO = "bromo"
 BOOK_PREFIX_SEMERU = "semeru"
+TAKEOVER_PREFIX = "takeover"
 
 
 async def book_semeru_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3079,6 +3112,109 @@ async def booking_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(part, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+async def take_over_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/take_over <KODE_BOOKING> → jadwalkan eksekusi ulang saat pembayaran kedaluwarsa."""
+    uid = str(update.effective_user.id)
+    ci = get_ci(uid)
+    if not ci:
+        await update.message.reply_text("Set dulu /set_session <ci_session>.")
+        return
+    if not context.args:
+        await update.message.reply_text("Format: /take_over <KODE_BOOKING>")
+        return
+    booking_code = context.args[0].strip()
+    try:
+        row = get_booking_by_code_api(booking_code, ci)
+    except Exception as e:
+        await update.message.reply_text(f"Gagal ambil booking: {e}")
+        return
+    expired_at = extract_expiry_from_row(row)
+    if not expired_at:
+        await update.message.reply_text("Tidak menemukan waktu kedaluwarsa pembayaran.")
+        return
+    leader = get_leader_from_row(row)
+    secret = leader.get("secret") or row.get("secret")
+    members = []
+    if secret:
+        try:
+            mrows, _ = get_members_by_secret(secret, ci_session=ci)
+            for m in mrows:
+                members.append({
+                    "nama": m.get("nama", ""),
+                    "birthdate": m.get("birthdate", ""),
+                    "id_gender": m.get("id_gender", ""),
+                    "alamat": m.get("alamat", ""),
+                    "id_identity": m.get("id_identity", ""),
+                    "identity_no": m.get("identity_no", ""),
+                    "hp_member": m.get("hp_member", ""),
+                    "hp_keluarga": m.get("hp_keluarga", ""),
+                    "id_job": m.get("id_job", ""),
+                    "id_country": m.get("id_country", "99"),
+                    "anggota_setuju": m.get("anggota_setuju", "0"),
+                })
+        except Exception:
+            pass
+    leader_profile = {
+        "id_country": "99",
+        "id_gender": "1",
+        "id_identity": "1",
+        "name": leader.get("leader_name", ""),
+        "identity_no": leader.get("leader_identity_no", ""),
+        "hp": leader.get("leader_hp", ""),
+        "birthdate": leader.get("leader_birthdate", ""),
+        "address": leader.get("leader_address", ""),
+        "id_province": "",
+        "id_district": "",
+        "pendamping": "0",
+        "organisasi": "",
+        "leader_setuju": "0",
+        "bank": "qris",
+    }
+    profile = {"_leader": leader_profile, "_members": members}
+    booking_iso = leader.get("date_depart") or row.get("date_depart") or expired_at.strftime("%Y-%m-%d")
+    job_name = make_job_name(TAKEOVER_PREFIX, uid, leader_profile.get("name", "ketua"),
+                             booking_iso, expired_at.strftime("%Y-%m-%d"), expired_at.strftime("%H:%M:%S"))
+    jobs_store = get_jobs_store(uid)
+    jobs_store[job_name] = {
+        "booking_iso": booking_iso,
+        "exec_iso": expired_at.strftime("%Y-%m-%d"),
+        "time": expired_at.strftime("%H:%M:%S"),
+        "profile": profile,
+        "cookies": {},
+        "reminder_minutes": None,
+        "created_at": datetime.now(ASIA_JAKARTA).isoformat(),
+        "chat_id": update.effective_chat.id,
+    }
+    save_storage(storage)
+    jq = require_jq(context)
+    jq.run_once(
+        scheduled_job,
+        when=expired_at,
+        name=job_name,
+        data={
+            "user_id": uid,
+            "site": "semeru",
+            "iso": booking_iso,
+            "profile": profile,
+            "cookies": {},
+        },
+        chat_id=update.effective_chat.id,
+    )
+    for mins, suf in [(30, ""), (15, "2")]:
+        remind_at = expired_at - timedelta(minutes=mins)
+        if remind_at > datetime.now(ASIA_JAKARTA):
+            jq.run_once(
+                reminder_job,
+                when=remind_at,
+                name=f"rem{suf}-{job_name}",
+                data={"user_id": uid, "job_name": job_name},
+                chat_id=update.effective_chat.id,
+            )
+    await update.message.reply_text(
+        f"Take over dijadwalkan pada {expired_at.strftime('%Y-%m-%d %H:%M:%S')} (Asia/Jakarta)."
+    )
+
+
 # -------- Global Error Handler ----------
 async def on_error(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logging.exception("Update caused error", exc_info=context.error)
@@ -3118,6 +3254,7 @@ def main():
     # Lookup booking code
     # NEW: lookup booking detail
     app.add_handler(CommandHandler("booking_detail", booking_detail_cmd))
+    app.add_handler(CommandHandler("take_over", take_over_cmd))
 
     # BROMO
     app.add_handler(ConversationHandler(

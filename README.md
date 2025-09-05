@@ -76,6 +76,10 @@ Skrip mencatat `latency.log` setiap 5 detik hanya pada jam rawan.
 - Perintah `/ping` dapat digunakan kapan saja untuk mengecek latensi sekali (opsional sertakan host).
 - Jalankan `/speedtest` untuk mengukur kecepatan download/upload VPS tanpa terikat jam kritis.
 
+## Take Over Booking
+
+Gunakan perintah `/take_over <KODE_BOOKING>` untuk menjadwalkan bot mengambil alih slot ketika batas waktu pembayaran booking tersebut habis. Bot akan mengingatkan 30 dan 15 menit sebelum kedaluwarsa untuk memperbarui cookie.
+
 ## Tips Tambahan
 - Login ke akun pemesanan lebih awal untuk "pemanasan" koneksi.
 - Gunakan `logrotate` atau mekanisme serupa untuk mengelola ukuran log.
