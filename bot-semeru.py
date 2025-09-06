@@ -1236,6 +1236,8 @@ def do_booking_flow_semeru(
     logger = globals().get("log") or logging.getLogger("booking-semeru")
     logger.warning("Tanggal berangkat (ISO): %s", booking_iso)
 
+    cleanup_msgs: list[str] = []
+
     safe_members = [m for m in (members or []) if (m.get("nama") or "").strip()]
     if len(safe_members) == 0:
         return False, "Form SEMERU wajib minimal 1 anggota (ketua + 1).", time.perf_counter()-t0, None
@@ -1388,9 +1390,15 @@ def do_booking_flow_semeru(
         to_del = [row for row in existing if row.get("date_depart") == booking_iso]
         if to_del:
             logger.info("Ditemukan %d anggota existing → hapus dulu", len(to_del))
+            cleanup_msgs.append("Ketua/member terdaftar sebelumnya:")
+            for row in to_del:
+                cleanup_msgs.append(f"- {row.get('nama','?')} ({row.get('identity_no','?')})")
+            cleanup_msgs.append("Proses hapus anggota lama:")
             for row in to_del:
                 row_secret = row.get("secret") or secret
                 okdel, msgdel = semeru_member_delete(sess, row_secret, row["id"])
+                status_txt = "berhasil" if okdel else f"gagal ({msgdel})"
+                cleanup_msgs.append(f"- {row.get('nama','?')} ({row.get('identity_no','?')}): {status_txt}")
                 logger.info("Del member id=%s (%s) → %s (%s)", row["id"], row.get("nama"), "OK" if okdel else "FAIL", msgdel)
                 time.sleep(0.15)
             try:
@@ -1469,10 +1477,14 @@ def do_booking_flow_semeru(
             logger.warning("Deteksi duplikat identitas → cleanup & retry sekali")
             try:
                 existing = semeru_list_members(sess, booking_iso)
-                for row in existing:
-                    if row.get("date_depart") == booking_iso:
+                dup_to_del = [row for row in existing if row.get("date_depart") == booking_iso]
+                if dup_to_del:
+                    cleanup_msgs.append("Cleanup ulang duplikat identitas:")
+                    for row in dup_to_del:
                         row_secret = row.get("secret") or secret
-                        semeru_member_delete(sess, row_secret, row["id"])
+                        okdel, msgdel = semeru_member_delete(sess, row_secret, row["id"])
+                        status_txt = "berhasil" if okdel else f"gagal ({msgdel})"
+                        cleanup_msgs.append(f"- {row.get('nama','?')} ({row.get('identity_no','?')}): {status_txt}")
                         time.sleep(0.1)
                 sess.post(ACTION_URL, data={"action": "validate_booking", "secret": secret, "form_hash": form_hash or ""}, timeout=20)
             except Exception as e:
@@ -1480,7 +1492,11 @@ def do_booking_flow_semeru(
             ok_do, data_do, msg_do = _do_booking(sess, secret, form_hash)
 
         if not ok_do:
-            return False, f"Booking Semeru GAGAL {secret[:12]}...: {msg_do}", time.perf_counter() - t0, (data_do or None)
+            cleanup_report = "\n".join(cleanup_msgs)
+            fail_msg = f"Booking Semeru GAGAL {secret[:12]}...: {msg_do}"
+            if cleanup_report:
+                fail_msg = cleanup_report + "\n" + fail_msg
+            return False, fail_msg, time.perf_counter() - t0, (data_do or None)
 
     # ——— SUKSES → susun pesan dengan KODE BOOKING
     elapsed = time.perf_counter() - t0
@@ -1535,6 +1551,9 @@ def do_booking_flow_semeru(
         f"{cmd_hint}"
         f"{extra_note}"
     )
+    cleanup_report = "\n".join(cleanup_msgs)
+    if cleanup_report:
+        msg = cleanup_report + "\n" + msg
 
     return True, msg, elapsed, data_do
 
