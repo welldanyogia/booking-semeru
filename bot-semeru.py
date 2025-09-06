@@ -1901,8 +1901,9 @@ def parse_hhmmss(s: str) -> tuple[int, int, int]:
 def _ensure_job_index(context: ContextTypes.DEFAULT_TYPE, uid: str, jobs_store: dict) -> dict[int, str]:
     idxmap_all = context.bot_data.setdefault("jobs_index", {})
     idxmap = {}
-    # urutkan konsisten
-    for i, name in enumerate(sorted(jobs_store.keys()), start=1):
+    # urutkan konsisten sesuai tampilan /jobs
+    items = sorted(jobs_store.items(), key=_sort_key)
+    for i, (name, _rec) in enumerate(items, start=1):
         idxmap[i] = name
     idxmap_all[uid] = idxmap
     return idxmap
@@ -2380,11 +2381,12 @@ def require_jq(context: ContextTypes.DEFAULT_TYPE):
 
 def resolve_job_selector(uid: str, selector: str) -> str | None:
     jobs_store = get_jobs_store(uid)
-    if not jobs_store: return None
-    names = sorted(jobs_store.keys())
+    if not jobs_store:
+        return None
     if selector.isdigit():
         idx = int(selector)
-        return names[idx - 1] if 1 <= idx <= len(names) else None
+        items = sorted(jobs_store.items(), key=_sort_key)
+        return items[idx - 1][0] if 1 <= idx <= len(items) else None
     return selector if selector in jobs_store else None
 
 
