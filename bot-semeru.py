@@ -214,8 +214,8 @@ def year_month_from_iso(iso: str) -> str: return iso[:7]
 
 
 def extract_int(text: str) -> int:
-    m = re.findall(r"\d+", text);
-    return int("".join(m)) if m else 0
+    m = re.search(r"-?\d+", text)
+    return int(m.group()) if m else 0
 
 
 def slugify(s: str, maxlen: int = 18) -> str:
@@ -265,16 +265,22 @@ def get_tokens_from_cnt_page(html: str, debug_name: str = "debug.html"):
 def find_quota_for_date(rows, iso_date: str):
     for tr in rows:
         tds = tr.find_all("td")
-        if len(tds) < 2: continue
+        if len(tds) < 2:
+            continue
         tanggal_text = " ".join(tds[0].stripped_strings)
         try:
             iso_from_cell = parse_date_indo_to_iso(tanggal_text)
         except:
             continue
         if iso_from_cell == iso_date:
-            quota_text = " ".join(tds[1].stripped_strings)
-            quota = extract_int(quota_text)
-            status = "Tersedia" if quota > 0 else "Habis / Tidak tersedia"
+            parts = list(tds[1].stripped_strings)
+            text_combined = " ".join(parts)
+            quota = extract_int(text_combined)
+            first_part = parts[0] if parts else ""
+            if re.search(r"\d", first_part):
+                status = "Tersedia" if quota > 0 else "Habis / Tidak tersedia"
+            else:
+                status = first_part
             return {"tanggal_cell": tanggal_text, "quota": quota, "status": status}
     return None
 
@@ -1524,11 +1530,15 @@ async def quota_semeru_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     quota = cap.get("quota", "-")
     tanggal_label = cap.get("tanggal_cell", iso_date)
-    msg = (
-        f"📅 Kuota Semeru {tanggal_label}\n"
-        f"🎟️ Tersisa: {quota}"
-    )
-    await update.message.reply_text(msg)
+    status_text = cap.get("status", "")
+
+    lines = [f"📅 Kuota Semeru {tanggal_label}"]
+    if status_text and "kuota penuh" in status_text.lower():
+        lines.append(f"⚠️ {status_text}")
+        lines.append(f"🎟️ Tersisa: {quota}")
+    else:
+        lines.append(f"🎟️ Tersisa: {quota}")
+    await update.message.reply_text("\n".join(lines))
 # =================== COMMON FORM PARSER (Bromo) ===================
 FORM_KEYS_BROMO = {
     "nama": "name",
