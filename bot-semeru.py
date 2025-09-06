@@ -809,7 +809,38 @@ def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, li
     members = []
 
     # normalize lines
-    lines = [ln for ln in text.splitlines() if ":" in ln]
+    # Support block-style input where member fields are grouped under
+    # "[ANGGOTA X]" headers without prefixing each line. We expand such
+    # blocks into the legacy format "Anggota X <Field>: <value>" so the
+    # remaining parsing logic (which expects prefixed keys) can stay the
+    # same. Lines outside any [ANGGOTA] block are left untouched.
+    processed_lines = []
+    current_prefix = ""
+    for raw in text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        if raw.startswith("[") and raw.endswith("]"):
+            title = raw[1:-1].strip()
+            m = re.match(r"(?i)anggota\s*(\d+)", title)
+            if m:
+                current_prefix = f"Anggota {m.group(1)}"
+            else:
+                current_prefix = ""  # reset for [DATA KETUA] or others
+            continue
+        if raw.startswith("#"):
+            current_prefix = ""
+            continue
+        if ":" in raw:
+            key = raw.split(":", 1)[0].strip()
+            if current_prefix and (key.startswith("_") or key.lower().startswith("ci_session") or key.lower().startswith("ingatkan")):
+                processed_lines.append(raw)
+            elif current_prefix:
+                processed_lines.append(f"{current_prefix} {raw}")
+            else:
+                processed_lines.append(raw)
+
+    lines = [ln for ln in processed_lines if ":" in ln]
     kv = {}
     for ln in lines:
         k, v = ln.split(":", 1)
@@ -871,8 +902,14 @@ def parse_form_block_semeru(text: str) -> tuple[dict, list, dict, int | None, li
             "id_identity": (get_ci(base + "Identitas") or "1"),
             "identity_no": get_ci(base + "NIK"),
             "hp_member": get_ci(base + "HP"),
-            "hp_keluarga": get_ci(f"HP Keluarga {i}") or get_ci("HP Keluarga"),
-            "id_job": (get_ci(f"Pekerjaan {i} (id_job)") or get_ci("Pekerjaan (id_job)") or "6"),
+            "hp_keluarga": get_ci(base + "HP Keluarga") or get_ci(f"HP Keluarga {i}") or get_ci("HP Keluarga"),
+            "id_job": (
+                get_ci(base + "Pekerjaan")
+                or get_ci(f"Pekerjaan {i} (id_job)")
+                or get_ci("Pekerjaan (id_job)")
+                or get_ci("Pekerjaan")
+                or "6"
+            ),
             "id_country": "99",
             "anggota_setuju": "0"
         }
